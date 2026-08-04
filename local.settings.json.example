@@ -1,0 +1,27 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsFeatureFlags": "EnableWorkerIndexing",
+    "ANKE_ENVIRONMENT": "local",
+    "ANKE_FIREBASE_PROJECT_ID": "anke-money",
+    "ANKE_FIREBASE_CHECK_REVOKED": "false",
+    "ANKE_FIREBASE_WEB_API_KEY": "",
+    "ANKE_FIREBASE_ALLOW_SYNTHETIC_USER": "false",
+    "ANKE_FIREBASE_CREDENTIALS_JSON": "",
+    "ANKE_COSMOS_ENDPOINT": "https://cosmos-anke-money-dev-zq01.documents.azure.com:443/",
+    "ANKE_COSMOS_DATABASE": "anke_money_dev",
+    "ANKE_COSMOS_ENTITIES_CONTAINER": "anke_entities",
+    "ANKE_COSMOS_IDENTITIES_CONTAINER": "anke_identities",
+    "ANKE_COSMOS_EXPECTED_ACCOUNT_NAME": "cosmos-anke-money-dev-zq01",
+    "ANKE_COSMOS_ALLOW_SMOKE_WRITE": "false",
+    "AZURE_CLIENT_ID": "",
+    "ANKE_COSMOS_KEY": ""
+  },
+  "Host": {
+    "LocalHttpPort": 3002,
+    "CORS": "http://127.0.0.1:3002",
+    "CORSCredentials": false
+  }
+}

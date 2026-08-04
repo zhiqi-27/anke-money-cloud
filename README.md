@@ -1,0 +1,132 @@
+# Anke Money Cloud
+
+Private backend for Anke Money Agent Cloud: Firebase-authenticated FastAPI on Azure
+Functions, Azure Cosmos DB persistence, synchronization, audit, and future Remote
+MCP/Skill adapters.
+
+The service is a coordination backend for an explicitly enabled Agent Cloud mode.
+The iOS app remains usable in local-only and iCloud modes without this service.
+
+## Repository map
+
+```text
+function_app.py            Azure Functions ASGI entry
+app/main.py                FastAPI construction and routes
+app/auth/                  Firebase identity verification
+app/models/                API and persisted contracts
+app/storage/               In-memory and Cosmos adapters
+docs/                      Frozen architecture, model, security, and DoD
+scripts/cosmos_smoke.py    Opt-in Development-only synthetic write/read check
+test/                      Credential-free unittest suite
+```
+
+Read `AGENTS.md` and the contracts under `docs/` before implementation work.
+Executed checks and unresolved cloud gates are recorded in `docs/verification.md`.
+
+## Runtime
+
+- Python 3.11 for Azure and CI
+- FastAPI
+- Azure Functions Python v2 programming model
+- Firebase Admin SDK
+- Azure Cosmos DB for NoSQL
+
+## Local setup
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m unittest discover -s test -p 'test_*.py'
+python -m uvicorn app.main:fastapi_app --host 127.0.0.1 --port 3002
+```
+
+Copy `local.settings.json.example` to ignored `local.settings.json` only when using
+Azure Functions locally. Do not populate or commit the example.
+
+## Local endpoints
+
+- `GET /ping` — public process health; does not prove Firebase or Cosmos health
+- `GET /openapi.json` — API contract
+- `GET /api/v1/me` — requires a valid Firebase ID token
+
+The app imports without Firebase credentials or a Cosmos connection. External
+clients initialize lazily only when an authenticated or explicit storage operation
+requires them.
+
+## Configuration
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `ANKE_ENVIRONMENT` | yes | `local`, `dev`, or `prod` |
+| `ANKE_FIREBASE_PROJECT_ID` | auth | Expected Firebase project/audience |
+| `ANKE_FIREBASE_WEB_API_KEY` | auth smoke | Firebase client API key used only to exchange a synthetic custom token |
+| `ANKE_FIREBASE_ALLOW_SYNTHETIC_USER` | auth smoke | Explicit `true` opt-in; the smoke deletes its random test user |
+| `GOOGLE_APPLICATION_CREDENTIALS` | local auth | Path to ignored Firebase credential JSON; deployed environments should use protected configuration |
+| `ANKE_FIREBASE_CREDENTIALS_JSON` | Azure auth | Key Vault-backed service-account JSON; never commit or log it |
+| `ANKE_FIREBASE_CHECK_REVOKED` | no | Verify revocation on every request; defaults true outside local |
+| `ANKE_COSMOS_ENDPOINT` | Cosmos | Cosmos account endpoint |
+| `ANKE_COSMOS_DATABASE` | Cosmos | Database name |
+| `ANKE_COSMOS_ENTITIES_CONTAINER` | Cosmos | Primary `/householdId` container |
+| `AZURE_CLIENT_ID` | Azure Cosmos | Client ID of the Function App's user-assigned managed identity |
+| `ANKE_COSMOS_KEY` | local fallback | Ignored local account key; prefer managed identity in Azure |
+| `ANKE_COSMOS_EXPECTED_ACCOUNT_NAME` | smoke | Exact Development account name guard |
+| `ANKE_COSMOS_ALLOW_SMOKE_WRITE` | smoke | Explicit `true` opt-in |
+
+## Azure Functions local host
+
+Install Azure Functions Core Tools separately, then:
+
+```bash
+func start --verbose
+```
+
+The default local port in the example settings is 3002. A successful Uvicorn run
+does not prove the Functions host integration.
+
+## Development Cosmos smoke
+
+The test deliberately writes one synthetic item and reads that exact item back. It
+does not delete it and it cannot run in Production.
+
+```bash
+ANKE_ENVIRONMENT=dev \
+ANKE_COSMOS_ALLOW_SMOKE_WRITE=true \
+python scripts/cosmos_smoke.py
+```
+
+Before running it, read `docs/security-boundary.md`. A local/unit pass is not cloud
+evidence; record the exact Development target and smoke result separately.
+
+The Development Function App uses its attached user-assigned managed identity via
+`AZURE_CLIENT_ID`. Do not add a Cosmos account key to deployed settings when this
+identity has the required Cosmos data-plane role.
+
+## Development Firebase auth smoke
+
+After the independent Development Firebase project and protected Admin credential
+are configured, validate a real short-lived ID token without placing it in shell
+history or process arguments:
+
+```bash
+ANKE_ENVIRONMENT=dev \
+ANKE_FIREBASE_PROJECT_ID=your-development-project-id \
+python scripts/firebase_auth_smoke.py
+```
+
+The script prompts for the token with hidden input and prints no token or decoded
+claims. It reports only the configured project ID and verified UID.
+
+For a credential-backed end-to-end Development check without retaining a test
+account, set the two opt-in smoke variables and run:
+
+```bash
+ANKE_ENVIRONMENT=dev \
+ANKE_FIREBASE_ALLOW_SYNTHETIC_USER=true \
+python scripts/firebase_e2e_smoke.py
+```
+
+The script creates a random `smoke-backend-` Firebase user through custom-token
+exchange, calls the real Firebase verifier on `/api/v1/me`, and deletes that exact
+synthetic user in a `finally` block. It does not validate Sign in with Apple or a
+physical device.

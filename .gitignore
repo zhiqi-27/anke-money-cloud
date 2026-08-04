@@ -1,0 +1,22 @@
+.DS_Store
+.idea/
+.vscode/
+.venv/
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.ruff_cache/
+
+# Local/runtime secrets
+.env
+.env.*
+!.env.example
+local.settings.json
+service-account*.json
+firebase-adminsdk-*.json
+
+# Azure Functions local output
+.python_packages/
+bin/
+obj/
