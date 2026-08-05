@@ -4,7 +4,10 @@ from app.config import ConfigurationError, Settings
 from app.storage.cosmos import CosmosHouseholdStorage
 from scripts.cosmos_smoke import validate_smoke_target
 from scripts.firebase_auth_smoke import validate_firebase_smoke_target
-from scripts.firebase_e2e_smoke import validate_synthetic_auth_target
+from scripts.firebase_e2e_smoke import (
+    validate_remote_smoke_target,
+    validate_synthetic_auth_target,
+)
 
 
 def settings(**overrides) -> Settings:
@@ -69,6 +72,24 @@ class SmokeGuardTest(unittest.TestCase):
                         web_api_key=api_key,
                         allow_synthetic_user=allow,
                     )
+
+    def test_remote_firebase_smoke_requires_exact_https_host(self):
+        host = "func-anke-money-dev.example.net"
+        self.assertEqual(
+            validate_remote_smoke_target(f"https://{host}/", host),
+            f"https://{host}",
+        )
+        self.assertEqual(validate_remote_smoke_target("", ""), "")
+        rejected = (
+            (f"http://{host}", host),
+            (f"https://{host}/api/v1/me", host),
+            (f"https://{host}", "other.example.net"),
+            (f"https://{host}", ""),
+        )
+        for base_url, expected_host in rejected:
+            with self.subTest(base_url=base_url, expected_host=expected_host):
+                with self.assertRaises(ConfigurationError):
+                    validate_remote_smoke_target(base_url, expected_host)
 
 
 if __name__ == "__main__":

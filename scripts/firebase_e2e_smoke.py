@@ -10,7 +10,6 @@ import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi.testclient import TestClient
 from firebase_admin import auth
 
 
@@ -37,6 +36,19 @@ def validate_synthetic_auth_target(
         raise ConfigurationError(
             "ANKE_FIREBASE_ALLOW_SYNTHETIC_USER=true is required"
         )
+
+
+def validate_remote_smoke_target(base_url: str, expected_host: str) -> str:
+    if not base_url:
+        return ""
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ConfigurationError("Remote Firebase smoke requires an HTTPS base URL")
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ConfigurationError("Remote Firebase smoke base URL must not include a path")
+    if not expected_host or parsed.hostname.lower() != expected_host.lower():
+        raise ConfigurationError("Remote Firebase smoke host does not match the expected host")
+    return base_url.rstrip("/")
 
 
 def exchange_custom_token(custom_token: bytes, web_api_key: str) -> str:
@@ -83,12 +95,54 @@ def exchange_custom_token(custom_token: bytes, web_api_key: str) -> str:
     return id_token
 
 
+def call_authenticated_me(id_token: str, uid: str, base_url: str) -> int:
+    if not base_url:
+        from fastapi.testclient import TestClient
+        from app.main import fastapi_app
+
+        response = TestClient(
+            fastapi_app,
+            raise_server_exceptions=False,
+        ).get(
+            "/api/v1/me",
+            headers={"Authorization": f"Bearer {id_token}"},
+        )
+        status_code = response.status_code
+        response_body = response.json()
+    else:
+        request = urllib.request.Request(
+            f"{base_url}/api/v1/me",
+            headers={"Authorization": f"Bearer {id_token}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status_code = response.status
+                response_body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"Authenticated remote /api/v1/me failed with status {exc.code}"
+            ) from None
+        except urllib.error.URLError:
+            raise RuntimeError("Authenticated remote /api/v1/me network failure") from None
+
+    if status_code != 200 or response_body != {"uid": uid}:
+        raise RuntimeError(
+            f"Authenticated /api/v1/me failed with status {status_code}"
+        )
+    return status_code
+
+
 def main() -> int:
     settings = Settings.from_environment()
     web_api_key = os.getenv("ANKE_FIREBASE_WEB_API_KEY", "").strip()
     allow_synthetic_user = (
         os.getenv("ANKE_FIREBASE_ALLOW_SYNTHETIC_USER", "").strip().lower()
         == "true"
+    )
+    base_url = validate_remote_smoke_target(
+        os.getenv("ANKE_FIREBASE_SMOKE_BASE_URL", "").strip(),
+        os.getenv("ANKE_FIREBASE_SMOKE_EXPECTED_HOST", "").strip(),
     )
     validate_synthetic_auth_target(
         settings,
@@ -106,19 +160,7 @@ def main() -> int:
         id_token = exchange_custom_token(custom_token, web_api_key)
         user_created = True
 
-        from app.main import fastapi_app
-
-        response = TestClient(
-            fastapi_app,
-            raise_server_exceptions=False,
-        ).get(
-            "/api/v1/me",
-            headers={"Authorization": f"Bearer {id_token}"},
-        )
-        if response.status_code != 200 or response.json() != {"uid": uid}:
-            raise RuntimeError(
-                f"Authenticated /api/v1/me failed with status {response.status_code}"
-            )
+        call_authenticated_me(id_token, uid, base_url)
     finally:
         if user_created:
             if not uid.startswith("smoke-backend-"):
@@ -130,6 +172,9 @@ def main() -> int:
     print(f"project_id={settings.firebase_project_id}")
     print(f"uid={uid}")
     print("endpoint=/api/v1/me")
+    print(f"target={'remote' if base_url else 'local'}")
+    if base_url:
+        print(f"target_host={urllib.parse.urlsplit(base_url).hostname}")
     print("status=200")
     print(f"synthetic_user_deleted={str(cleanup_passed).lower()}")
     return 0

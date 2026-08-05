@@ -62,6 +62,8 @@ requires them.
 | `ANKE_FIREBASE_PROJECT_ID` | auth | Expected Firebase project/audience |
 | `ANKE_FIREBASE_WEB_API_KEY` | auth smoke | Firebase client API key used only to exchange a synthetic custom token |
 | `ANKE_FIREBASE_ALLOW_SYNTHETIC_USER` | auth smoke | Explicit `true` opt-in; the smoke deletes its random test user |
+| `ANKE_FIREBASE_SMOKE_BASE_URL` | auth smoke | Optional HTTPS Development deployment target |
+| `ANKE_FIREBASE_SMOKE_EXPECTED_HOST` | auth smoke | Exact host guard required with a remote smoke target |
 | `GOOGLE_APPLICATION_CREDENTIALS` | local auth | Path to ignored Firebase credential JSON; deployed environments should use protected configuration |
 | `ANKE_FIREBASE_CREDENTIALS_JSON` | Azure auth | Key Vault-backed service-account JSON; never commit or log it |
 | `ANKE_FIREBASE_CHECK_REVOKED` | no | Verify revocation on every request; defaults true outside local |
@@ -126,7 +128,26 @@ ANKE_FIREBASE_ALLOW_SYNTHETIC_USER=true \
 python scripts/firebase_e2e_smoke.py
 ```
 
+To exercise the deployed Development Function instead of the in-process app, also
+set `ANKE_FIREBASE_SMOKE_BASE_URL` and the exact
+`ANKE_FIREBASE_SMOKE_EXPECTED_HOST`. The script rejects HTTP, host mismatches, and
+base URLs containing a path.
+
 The script creates a random `smoke-backend-` Firebase user through custom-token
 exchange, calls the real Firebase verifier on `/api/v1/me`, and deletes that exact
 synthetic user in a `finally` block. It does not validate Sign in with Apple or a
 physical device.
+
+## Development deployment
+
+The current Development endpoint is:
+
+```text
+https://func-anke-money-dev-zq01-a0btadd7fsfkc6cj.eastasia-01.azurewebsites.net
+```
+
+Azure stores Firebase Admin JSON in Key Vault secret
+`firebase-admin-credentials-json`. The Function App setting contains only a Key
+Vault reference; its user-assigned managed identity has the minimum secret-reader
+role. Cosmos access also uses managed identity. Do not replace either path with a
+committed or plain-text account key.

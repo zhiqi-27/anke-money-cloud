@@ -9,6 +9,8 @@
     "ANKE_FIREBASE_CHECK_REVOKED": "false",
     "ANKE_FIREBASE_WEB_API_KEY": "",
     "ANKE_FIREBASE_ALLOW_SYNTHETIC_USER": "false",
+    "ANKE_FIREBASE_SMOKE_BASE_URL": "",
+    "ANKE_FIREBASE_SMOKE_EXPECTED_HOST": "",
     "ANKE_FIREBASE_CREDENTIALS_JSON": "",
     "ANKE_COSMOS_ENDPOINT": "https://cosmos-anke-money-dev-zq01.documents.azure.com:443/",
     "ANKE_COSMOS_DATABASE": "anke_money_dev",

@@ -28,3 +28,16 @@
 - Production: independently authorized deployment and production checks.
 
 One evidence class never proves another.
+
+## Development deployment
+
+- [x] `anke_identities` exists with the exact `/uid` partition key.
+- [x] Firebase Admin credentials are stored in Development Key Vault and exposed
+  to the Function App only through a managed-identity Key Vault reference.
+- [x] The committed Function project is deployed with a Python remote build.
+- [x] Deployed `/ping` and `/openapi.json` return 200.
+- [x] Deployed `/api/v1/me` returns 401 without a valid token and 200 for a real
+  Firebase ID token whose UID is returned unchanged.
+
+Development deployment evidence does not prove Sign in with Apple or physical-device
+behavior.
