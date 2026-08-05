@@ -3,13 +3,48 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from uuid import UUID
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
 from app.auth import AuthenticatedIdentity
 from app.config import get_settings
-from app.dependencies import current_identity
+from app.dependencies import (
+    agent_access_service,
+    agent_refresh_token,
+    cloud_service,
+    current_agent,
+    current_identity,
+)
+from app.models import (
+    AgentAccessToken,
+    AgentAssetSnapshotCreate,
+    AgentConnectionCreate,
+    AgentConnectionCreated,
+    AgentConnectionView,
+    AgentLedgerCreateResponse,
+    AgentLedgerEntryCreate,
+    AgentEntityCreateResponse,
+    AgentEntityListResponse,
+    AgentPrincipal,
+    AuditListResponse,
+    BootstrapResponse,
+    DeviceRegistration,
+    MigrationActivateRequest,
+    MigrationResponse,
+    MigrationUploadRequest,
+    SyncPullResponse,
+    SyncPushRequest,
+    SyncPushResponse,
+)
+from app.services import (
+    AgentAccessService,
+    CloudService,
+    InvalidAgentTokenError,
+    WorkspaceNotActiveError,
+)
+from app.services.cloud import MembershipRequiredError
 
 
 logger = logging.getLogger(__name__)
@@ -62,6 +97,14 @@ async def unhandled_exception(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
+@fastapi_app.exception_handler(WorkspaceNotActiveError)
+async def workspace_not_active(request: Request, exc: WorkspaceNotActiveError):
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": "Agent Cloud workspace is not active"},
+    )
+
+
 @fastapi_app.get("/ping", tags=["health"], summary="Process health")
 async def ping() -> dict[str, str]:
     return {
@@ -84,3 +127,271 @@ async def me(
     identity: AuthenticatedIdentity = Depends(current_identity),
 ) -> dict[str, str]:
     return {"uid": identity.uid}
+
+
+@fastapi_app.post(
+    "/api/v1/bootstrap",
+    tags=["cloud"],
+    response_model=BootstrapResponse,
+    summary="Create or restore the owner household and register this device",
+)
+async def bootstrap(
+    registration: DeviceRegistration,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> BootstrapResponse:
+    return service.bootstrap(identity, registration)
+
+
+@fastapi_app.post(
+    "/api/v1/agent-connections",
+    tags=["agent authorization"],
+    response_model=AgentConnectionCreated,
+    summary="Create a scoped, expiring agent connection",
+)
+async def create_agent_connection(
+    request: AgentConnectionCreate,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+    access: AgentAccessService = Depends(agent_access_service),
+) -> AgentConnectionCreated:
+    try:
+        return service.create_agent_connection(identity, request, access)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+
+
+@fastapi_app.get(
+    "/api/v1/agent-connections",
+    tags=["agent authorization"],
+    response_model=list[AgentConnectionView],
+    summary="List visible agent connections",
+)
+async def list_agent_connections(
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> list[AgentConnectionView]:
+    try:
+        return service.list_agent_connections(identity)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+
+
+@fastapi_app.delete(
+    "/api/v1/agent-connections/{connection_id}",
+    tags=["agent authorization"],
+    response_model=AgentConnectionView,
+    summary="Revoke an agent connection immediately",
+)
+async def revoke_agent_connection(
+    connection_id: UUID,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> AgentConnectionView:
+    try:
+        return service.revoke_agent_connection(identity, connection_id)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent connection not found") from exc
+
+
+@fastapi_app.post(
+    "/agent/v1/token/refresh",
+    tags=["agent authorization"],
+    response_model=AgentAccessToken,
+    summary="Refresh a short-lived access token within its parent grant",
+)
+async def refresh_agent_token(
+    refresh_token: str = Depends(agent_refresh_token),
+    access: AgentAccessService = Depends(agent_access_service),
+) -> AgentAccessToken:
+    try:
+        return access.refresh(refresh_token)
+    except InvalidAgentTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired agent refresh token",
+        ) from exc
+
+
+@fastapi_app.post(
+    "/agent/v1/ledger/entries",
+    tags=["agent"],
+    response_model=AgentLedgerCreateResponse,
+    summary="Append an idempotent ledger entry with agent scope",
+)
+async def agent_create_ledger_entry(
+    request: AgentLedgerEntryCreate,
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentLedgerCreateResponse:
+    try:
+        return service.agent_create_ledger_entry(principal, request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+
+
+@fastapi_app.get(
+    "/agent/v1/ledger/entries",
+    tags=["agent"],
+    response_model=AgentEntityListResponse,
+    summary="Read ledger entries with agent scope",
+)
+async def agent_list_ledger_entries(
+    limit: int = Query(default=200, ge=1, le=500),
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentEntityListResponse:
+    try:
+        return service.agent_list_ledger_entries(principal, limit)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+
+
+@fastapi_app.get(
+    "/agent/v1/assets",
+    tags=["agent"],
+    response_model=AgentEntityListResponse,
+    summary="Read asset accounts and snapshots with agent scope",
+)
+async def agent_list_assets(
+    limit: int = Query(default=200, ge=1, le=500),
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentEntityListResponse:
+    try:
+        return service.agent_list_assets(principal, limit)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+
+
+@fastapi_app.post(
+    "/agent/v1/assets/snapshots",
+    tags=["agent"],
+    response_model=AgentEntityCreateResponse,
+    summary="Append an idempotent asset snapshot with agent scope",
+)
+async def agent_create_asset_snapshot(
+    request: AgentAssetSnapshotCreate,
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentEntityCreateResponse:
+    try:
+        return service.agent_create_asset_snapshot(principal, request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@fastapi_app.get(
+    "/agent/v1/reference-data",
+    tags=["agent"],
+    response_model=AgentEntityListResponse,
+    summary="Read payment channels and categories with agent scope",
+)
+async def agent_list_reference_data(
+    limit: int = Query(default=200, ge=1, le=500),
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentEntityListResponse:
+    try:
+        return service.agent_list_reference_data(principal, limit)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+
+
+@fastapi_app.post(
+    "/api/v1/sync/push",
+    tags=["sync"],
+    response_model=SyncPushResponse,
+    summary="Push an ordered device mutation batch",
+)
+async def sync_push(
+    request: SyncPushRequest,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> SyncPushResponse:
+    try:
+        return service.push(identity, request)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+
+
+@fastapi_app.get(
+    "/api/v1/sync/pull",
+    tags=["sync"],
+    response_model=SyncPullResponse,
+    summary="Pull household changes after an opaque cursor",
+)
+async def sync_pull(
+    cursor: str | None = Query(default=None, max_length=2048),
+    limit: int = Query(default=200, ge=1, le=500),
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> SyncPullResponse:
+    try:
+        return service.pull(identity, cursor, limit)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid sync cursor") from exc
+
+
+@fastapi_app.get(
+    "/api/v1/audit",
+    tags=["audit"],
+    response_model=AuditListResponse,
+    summary="List redacted remote-operation audit events for the owner",
+)
+async def audit_events(
+    cursor: str | None = Query(default=None, max_length=2048),
+    limit: int = Query(default=100, ge=1, le=200),
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> AuditListResponse:
+    try:
+        return service.audit(identity, cursor, limit)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid audit cursor") from exc
+
+
+@fastapi_app.post(
+    "/api/v1/migrations",
+    tags=["migration"],
+    response_model=MigrationResponse,
+    summary="Stage an idempotent Local or iCloud snapshot migration",
+)
+async def stage_migration(
+    request: MigrationUploadRequest,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> MigrationResponse:
+    try:
+        return service.stage_migration(identity, request)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@fastapi_app.post(
+    "/api/v1/migrations/activate",
+    tags=["migration"],
+    response_model=MigrationResponse,
+    summary="Activate a verified staged migration",
+)
+async def activate_migration(
+    request: MigrationActivateRequest,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> MigrationResponse:
+    try:
+        return service.activate_migration(identity, request.session_id, request.content_digest)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

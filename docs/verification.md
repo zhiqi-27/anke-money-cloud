@@ -17,6 +17,9 @@ not prove Development cloud or Production behavior.
 | 2026-08-05 | Development deployment | Azure Functions remote build | Deployed Git commit `4e0d891` to `func-anke-money-dev-zq01`; Azure discovered `func-anke-money-dev-zq01/http_app_func` | Passed |
 | 2026-08-05 | Development deployment | Public and authentication boundary | `GET /ping` 200 with `environment=dev`; `/openapi.json` 200 with `/api/v1/me`; missing and invalid bearer tokens returned 401 | Passed |
 | 2026-08-05 | Development deployment | Real Firebase token to deployed API | Created synthetic Firebase UID, exchanged a custom token for a real ID token, called deployed `/api/v1/me`, and deleted the exact synthetic user in `finally` | Passed; status 200 for UID `smoke-backend-40ad99fc-0a06-4150-8e80-19e085a5456b`; target host `func-anke-money-dev-zq01-a0btadd7fsfkc6cj.eastasia-01.azurewebsites.net` |
+| 2026-08-05 | Local A1 | Sync, conflict, tombstone, audit, migration, and remote Agent contracts | Python 3.12 virtual environment; credential-free FastAPI/TestClient, model, in-memory storage, Cosmos adapter, and Azure timer registration suite | Passed; 58 tests, 0 failures; includes server-owned bootstrap and device outbox checkpoint recovery, active-workspace write gating, ordered outbox, idempotent replay, persistent incremental cursor, stale revision, soft delete, redacted audit, resumable tombstone-aware migration, per-entity replica payload validation, Cosmos batch shape, all five Agent scopes and excluded-route checks, 15-minute token rotation bounded by the parent grant, immediate revocation, offline device plus remote Agent merge, offline-safe ledger/asset writes, and idempotent 30/365-day retention |
+| 2026-08-05 | Development deployment | A1 Azure Functions remote build and trigger discovery | Deployed the current A1 Function runtime to `func-anke-money-dev-zq01`; `GET /ping` returned 200 with `environment=dev`; OpenAPI exposed bootstrap, sync, migration, audit, Agent connection, refresh, ledger, asset, and reference-data routes | Passed; Azure registered `http_app_func` and daily timer `enforce_data_retention` with schedule `0 0 3 * * *` |
+| 2026-08-05 | Development A1 E2E | Real Firebase, deployed API, and Cosmos workflow | A synthetic owner staged and replayed a five-entity local migration, activated it idempotently, performed idempotent Agent ledger and asset writes, pushed a disconnected-device mutation, pulled all three writers, exercised accepted update, stale conflict, tombstone deletion, redacted audit, and immediate Agent revocation | Passed; run `f7cbb5e2-ce1e-402c-8447-80b9d60088d2`; exact synthetic Cosmos partition cleanup deleted 33 documents and the synthetic Firebase user was deleted |
 
 ## Remaining evidence boundaries
 
@@ -24,3 +27,9 @@ not prove Development cloud or Production behavior.
   behavior remain unverified. The synthetic Firebase smoke is not evidence for them.
 - Production deployment, secrets, schema promotion, and production data were not
   accessed or changed.
+- The Development A1 E2E proves the deployed synthetic workflow and real Cosmos
+  persistence. It does not prove a signed iOS local/iCloud migration, source-store
+  archival on a device, or a second physical device reconnect.
+- The retention timer is deployed and registered, but its destructive lifecycle
+  behavior still has local adapter evidence only; no operational timer invocation
+  was forced against shared Development data.

@@ -41,3 +41,30 @@ One evidence class never proves another.
 
 Development deployment evidence does not prove Sign in with Apple or physical-device
 behavior.
+
+## A1 local implementation checkpoint
+
+- [x] Owner bootstrap persists user, household, device, connection, and UID membership records.
+- [x] Ordered push and cursor pull contracts are versioned under `/api/v1`.
+- [x] Bootstrap returns a full-replica cursor plus the server-owned next outbox
+      sequence so a restored device cannot create a permanent sequence gap.
+- [x] Mutation replay is idempotent and an outbox sequence gap is rejected.
+- [x] Stale revisions return the server entity as an explicit conflict.
+- [x] Accepted deletion produces a revisioned tombstone.
+- [x] Accepted, rejected, and conflicted writes create a redacted audit event.
+- [x] Local/iCloud migration uses a stable resumable session, verified counts, and a canonical SHA-256 digest.
+- [x] Cosmos writes batch the accepted entity, operation result, audit event, and device sequence in one household partition.
+- [x] Owner APIs create, list, and revoke scoped Agent connections without storing plaintext tokens.
+- [x] Remote Agent ledger writes are idempotent, audited, and visible to the app's next cursor pull.
+- [x] Revoked, expired, or invalid tokens for a known Agent connection are rejected and audited.
+- [x] Access tokens rotate within 15 minutes and refresh cannot outlive or bypass the parent grant.
+- [x] All five initial Agent scopes have separate enforced routes; insufficient-scope attempts are rejected and audited.
+- [x] Remote asset snapshots validate their account, batch entity/operation/audit writes, and replay idempotently.
+- [x] Empty or staging workspaces reject normal sync writes and Agent authorization until migration activation.
+- [x] The daily retention function idempotently purges 30-day tombstone payloads and deletes 365-day audit events in local adapter tests.
+- [x] The new A1 API has been deployed to Development and exercised against real Cosmos.
+- [ ] A real local/iCloud dataset has completed staged upload, activation, reconnect pull, and source-archive verification.
+- [ ] Tombstone payload purge and 365-day audit retention have operational timer evidence.
+
+Checked items above are local contract, unit, and adapter evidence only. They do
+not promote the Development deployment recorded earlier in this file.

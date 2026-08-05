@@ -49,6 +49,45 @@ Azure Functions locally. Do not populate or commit the example.
 - `GET /ping` — public process health; does not prove Firebase or Cosmos health
 - `GET /openapi.json` — API contract
 - `GET /api/v1/me` — requires a valid Firebase ID token
+- `POST /api/v1/bootstrap` — resolves or creates the server-owned owner,
+  household, device, and connection records
+- `POST /api/v1/sync/push` — accepts ordered, idempotent device mutations
+- `GET /api/v1/sync/pull` — returns changes after an opaque cursor
+- `GET /api/v1/audit` — returns redacted owner-visible mutation outcomes
+- `POST /api/v1/migrations` — stages a verified Local/iCloud snapshot
+- `POST /api/v1/migrations/activate` — atomically activates a staged manifest
+- `POST /api/v1/agent-connections` — creates a scoped owner-authorized Agent
+  connection and returns its short-lived access token once
+- `GET /api/v1/agent-connections` — lists owner-visible Agent connections
+- `DELETE /api/v1/agent-connections/{connection_id}` — immediately revokes a
+  connection and its outstanding token
+- `POST /agent/v1/token/refresh` — rotates the short-lived access token while
+  the parent grant remains active
+- `GET /agent/v1/ledger/entries` — reads ledger entries with `ledger.read`
+- `POST /agent/v1/ledger/entries` — accepts an idempotent, scoped remote Agent
+  ledger write that is published to the app's incremental change stream
+- `GET /agent/v1/assets` — reads asset accounts and snapshots with `assets.read`
+- `POST /agent/v1/assets/snapshots` — appends an idempotent snapshot with
+  `assets.snapshot.create`
+- `GET /agent/v1/reference-data` — reads channels and categories with
+  `reference-data.read`
+
+The household is always resolved from the verified Firebase UID. Sync and
+migration payloads cannot choose a household or actor. A registered device uses
+one ascending outbox sequence; a repeated mutation ID returns its stored result.
+Revision mismatches return explicit conflicts, and accepted deletes publish
+tombstones rather than physically erasing the entity.
+
+Agent endpoints use a separate bearer-token boundary from Firebase owner APIs.
+Only the token hash is retained. Read-only grants are capped at 7 days, grants
+with create access at 24 hours, and access tokens at 15 minutes. The separately
+hashed refresh credential can rotate access tokens only until the parent grant
+expires. Rejected
+authentication attempts for a known connection are
+recorded in the owner-visible audit stream. Remote Agent entries use their own
+operation ID, so a retry cannot duplicate a ledger entry while the app is offline.
+The same rule applies to remote asset snapshots. Read, ledger-create, and
+asset-snapshot-create scopes are checked independently on every request.
 
 The app imports without Firebase credentials or a Cosmos connection. External
 clients initialize lazily only when an authenticated or explicit storage operation
@@ -151,3 +190,10 @@ Azure stores Firebase Admin JSON in Key Vault secret
 Vault reference; its user-assigned managed identity has the minimum secret-reader
 role. Cosmos access also uses managed identity. Do not replace either path with a
 committed or plain-text account key.
+Normal sync writes and Agent authorization remain disabled while a newly
+bootstrapped workspace is empty or staging migration data. Migration activation
+is the only transition that makes the Agent Cloud workspace writable.
+
+A monitored Azure timer runs daily at 03:00 UTC. It removes recoverable payloads
+from tombstones older than 30 days and deletes redacted audit events older than
+365 days; both operations are idempotent.

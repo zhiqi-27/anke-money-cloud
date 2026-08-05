@@ -1,11 +1,22 @@
+import hashlib
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.auth import AuthenticatedIdentity, InvalidTokenError
 from app.config import ConfigurationError
+from app.dependencies import agent_access_service, cloud_service
 from app.main import fastapi_app
+from app.models import (
+    MigrationManifest,
+    MigrationSourceMode,
+    MigrationUploadRequest,
+)
+from app.services import CloudService
+from app.services import AgentAccessService
+from app.storage.in_memory import InMemoryHouseholdStorage
 
 
 class FakeTokenVerifier:
@@ -24,6 +35,31 @@ class ApiContractTest(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(fastapi_app, raise_server_exceptions=False)
 
+    def tearDown(self):
+        fastapi_app.dependency_overrides.clear()
+
+    @staticmethod
+    def activate_empty_workspace(storage: InMemoryHouseholdStorage, device_id: str):
+        service = CloudService(storage)
+        identity = AuthenticatedIdentity(uid="firebase-user-1")
+        digest = hashlib.sha256(b"[]").hexdigest()
+        session_id = uuid4()
+        service.stage_migration(
+            identity,
+            MigrationUploadRequest(
+                device_id=device_id,
+                manifest=MigrationManifest(
+                    session_id=session_id,
+                    source_mode=MigrationSourceMode.local,
+                    schema_version=1,
+                    record_counts={},
+                    content_digest=digest,
+                ),
+                items=[],
+            ),
+        )
+        service.activate_migration(identity, session_id, digest)
+
     def test_ping_is_public_and_non_sensitive(self):
         response = self.client.get("/ping")
 
@@ -39,9 +75,51 @@ class ApiContractTest(unittest.TestCase):
         paths = response.json()["paths"]
         self.assertIn("/ping", paths)
         self.assertIn("/api/v1/me", paths)
+        self.assertIn("/api/v1/bootstrap", paths)
+        self.assertIn("/api/v1/sync/push", paths)
+        self.assertIn("/api/v1/sync/pull", paths)
+        self.assertIn("/api/v1/migrations", paths)
+        self.assertIn("/api/v1/audit", paths)
+        self.assertIn("/api/v1/agent-connections", paths)
+        self.assertIn("/agent/v1/token/refresh", paths)
+        self.assertIn("/agent/v1/ledger/entries", paths)
+        self.assertIn("/agent/v1/assets", paths)
+        self.assertIn("/agent/v1/assets/snapshots", paths)
+        self.assertIn("/agent/v1/reference-data", paths)
         identity_operation = paths["/api/v1/me"]["get"]
         self.assertEqual(identity_operation["security"], [{"HTTPBearer": []}])
+        self.assertEqual(
+            paths["/agent/v1/token/refresh"]["post"]["security"],
+            [{"AgentRefreshBearer": []}],
+        )
+        self.assertEqual(
+            paths["/agent/v1/assets"]["get"]["security"],
+            [{"AgentBearer": []}],
+        )
         self.assertIn("HTTPBearer", response.json()["components"]["securitySchemes"])
+        self.assertIn("AgentBearer", response.json()["components"]["securitySchemes"])
+
+        agent_methods = {
+            path: set(operation.keys())
+            for path, operation in paths.items()
+            if path.startswith("/agent/")
+        }
+        self.assertEqual(agent_methods, {
+            "/agent/v1/token/refresh": {"post"},
+            "/agent/v1/ledger/entries": {"get", "post"},
+            "/agent/v1/assets": {"get"},
+            "/agent/v1/assets/snapshots": {"post"},
+            "/agent/v1/reference-data": {"get"},
+        })
+        self.assertFalse(any(
+            fragment in path
+            for path in agent_methods
+            for fragment in (
+                "member", "setting", "migration", "export",
+                "connection", "audit", "import",
+            )
+        ))
+        self.assertIn("AgentRefreshBearer", response.json()["components"]["securitySchemes"])
 
     def test_protected_route_rejects_missing_or_invalid_token(self):
         with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
@@ -82,6 +160,309 @@ class ApiContractTest(unittest.TestCase):
         import function_app
 
         self.assertIsNotNone(function_app.app)
+        self.assertIn(
+            "enforce_data_retention",
+            {item.get_function_name() for item in function_app.app.get_functions()},
+        )
+
+    def test_authenticated_bootstrap_and_sync_routes_never_accept_household_from_client(self):
+        storage = InMemoryHouseholdStorage()
+        fastapi_app.dependency_overrides[cloud_service] = lambda: CloudService(storage)
+        headers = {"Authorization": "Bearer valid-test-token"}
+        bootstrap_body = {
+            "deviceId": "22222222-2222-2222-2222-222222222222",
+            "name": "Synthetic iPhone",
+            "platform": "ios",
+            "appVersion": "0.1.0",
+        }
+        mutation = {
+            "mutationId": "11111111-1111-1111-1111-111111111111",
+            "deviceId": bootstrap_body["deviceId"],
+            "sequence": 1,
+            "entityType": "ledgerEntry",
+            "entityId": "entry-1",
+            "action": "create",
+            "baseRevision": None,
+            "occurredAt": "2026-08-05T00:00:00Z",
+            "payload": {
+                "kind": "transaction",
+                "direction": "expense",
+                "occurredAt": "2026-08-05T00:00:00Z",
+                "monthStart": "2026-08-01",
+                "channelId": "cash",
+                "categoryId": "grocery",
+                "amountInFen": 8800,
+            },
+        }
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            bootstrap = self.client.post("/api/v1/bootstrap", headers=headers, json=bootstrap_body)
+            self.activate_empty_workspace(storage, bootstrap_body["deviceId"])
+            pushed = self.client.post(
+                "/api/v1/sync/push",
+                headers=headers,
+                json={"deviceId": bootstrap_body["deviceId"], "mutations": [mutation]},
+            )
+            pulled = self.client.get("/api/v1/sync/pull?limit=10", headers=headers)
+            audit = self.client.get("/api/v1/audit?limit=10", headers=headers)
+
+        self.assertEqual(bootstrap.status_code, 200)
+        self.assertEqual(bootstrap.json()["nextOutboxSequence"], 1)
+        self.assertEqual(bootstrap.json()["workspaceStatus"], "empty")
+        self.assertEqual(pushed.status_code, 200)
+        self.assertEqual(pushed.json()["results"][0]["status"], "accepted")
+        self.assertEqual(pulled.status_code, 200)
+        self.assertEqual(pulled.json()["changes"][0]["entityId"], "entry-1")
+        self.assertEqual(audit.status_code, 200)
+        self.assertEqual(audit.json()["events"][0]["operationId"], mutation["mutationId"])
+        self.assertNotIn("amountInFen", audit.text)
+        self.assertNotIn("note", audit.text)
+        self.assertNotIn("householdId", mutation)
+
+    def test_sync_requires_bootstrap_membership(self):
+        fastapi_app.dependency_overrides[cloud_service] = lambda: CloudService(InMemoryHouseholdStorage())
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            response = self.client.get(
+                "/api/v1/sync/pull",
+                headers={"Authorization": "Bearer valid-test-token"},
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {"detail": "Bootstrap required"})
+
+    def test_empty_workspace_rejects_normal_sync_and_agent_authorization(self):
+        storage = InMemoryHouseholdStorage()
+        fastapi_app.dependency_overrides[cloud_service] = lambda: CloudService(storage)
+        fastapi_app.dependency_overrides[agent_access_service] = lambda: AgentAccessService(storage)
+        headers = {"Authorization": "Bearer valid-test-token"}
+        device_id = "22222222-2222-2222-2222-222222222222"
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            self.client.post(
+                "/api/v1/bootstrap",
+                headers=headers,
+                json={"deviceId": device_id, "name": "iPhone", "platform": "ios", "appVersion": "0.1.0"},
+            )
+            sync = self.client.post(
+                "/api/v1/sync/push",
+                headers=headers,
+                json={"deviceId": device_id, "mutations": [{
+                    "mutationId": "11111111-1111-1111-1111-111111111111",
+                    "deviceId": device_id,
+                    "sequence": 1,
+                    "entityType": "memberProfile",
+                    "entityId": "owner",
+                    "action": "create",
+                    "occurredAt": "2026-08-05T00:00:00Z",
+                    "payload": {"name": "Owner"},
+                }]},
+            )
+            connection = self.client.post(
+                "/api/v1/agent-connections",
+                headers=headers,
+                json={"name": "Blocked agent", "scopes": ["ledger.read"]},
+            )
+
+        self.assertEqual(sync.status_code, 409)
+        self.assertEqual(connection.status_code, 409)
+        self.assertEqual(sync.json(), {"detail": "Agent Cloud workspace is not active"})
+
+    def test_agent_connection_token_writes_while_owner_app_is_offline(self):
+        storage = InMemoryHouseholdStorage()
+        fastapi_app.dependency_overrides[cloud_service] = lambda: CloudService(storage)
+        fastapi_app.dependency_overrides[agent_access_service] = lambda: AgentAccessService(storage)
+        owner_headers = {"Authorization": "Bearer valid-test-token"}
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            bootstrap = self.client.post(
+                "/api/v1/bootstrap",
+                headers=owner_headers,
+                json={"deviceId": "22222222-2222-2222-2222-222222222222", "name": "iPhone", "platform": "ios", "appVersion": "0.1.0"},
+            )
+            self.activate_empty_workspace(
+                storage, "22222222-2222-2222-2222-222222222222"
+            )
+            connection = self.client.post(
+                "/api/v1/agent-connections",
+                headers=owner_headers,
+                json={"name": "Synthetic agent", "scopes": ["ledger.entry.create"]},
+            )
+        self.assertEqual(bootstrap.status_code, 200)
+        self.assertEqual(connection.status_code, 200)
+        agent_token = connection.json()["accessToken"]
+        refresh_token = connection.json()["refreshToken"]
+        refreshed = self.client.post(
+            "/agent/v1/token/refresh",
+            headers={"Authorization": f"Bearer {refresh_token}"},
+        )
+        self.assertEqual(refreshed.status_code, 200)
+        agent_token = refreshed.json()["accessToken"]
+        agent_write = self.client.post(
+            "/agent/v1/ledger/entries",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={
+                "id": "33333333-3333-3333-3333-333333333333",
+                "operationId": "44444444-4444-4444-4444-444444444444",
+                "kind": "transaction",
+                "direction": "expense",
+                "occurredAt": "2026-08-05T00:00:00Z",
+                "monthStart": "2026-08-01",
+                "channelId": "cash",
+                "categoryId": "grocery",
+                "amountInFen": 8800,
+            },
+        )
+        replay = self.client.post(
+            "/agent/v1/ledger/entries",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json={
+                "id": "33333333-3333-3333-3333-333333333333",
+                "operationId": "44444444-4444-4444-4444-444444444444",
+                "kind": "transaction",
+                "direction": "expense",
+                "occurredAt": "2026-08-05T00:00:00Z",
+                "monthStart": "2026-08-01",
+                "channelId": "cash",
+                "categoryId": "grocery",
+                "amountInFen": 8800,
+            },
+        )
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            owner_push = self.client.post(
+                "/api/v1/sync/push",
+                headers=owner_headers,
+                json={
+                    "deviceId": "22222222-2222-2222-2222-222222222222",
+                    "mutations": [{
+                        "mutationId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        "deviceId": "22222222-2222-2222-2222-222222222222",
+                        "sequence": 1,
+                        "entityType": "ledgerEntry",
+                        "entityId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                        "action": "create",
+                        "occurredAt": "2026-08-05T00:30:00Z",
+                        "payload": {
+                            "kind": "transaction",
+                            "direction": "expense",
+                            "occurredAt": "2026-08-05T00:30:00Z",
+                            "monthStart": "2026-08-01",
+                            "channelId": "cash",
+                            "categoryId": "grocery",
+                            "amountInFen": 1200,
+                        },
+                    }],
+                },
+            )
+            owner_pull = self.client.get(
+                f"/api/v1/sync/pull?cursor={bootstrap.json()['syncCursor']}",
+                headers=owner_headers,
+            )
+        self.assertEqual(agent_write.status_code, 200)
+        self.assertFalse(agent_write.json()["replayed"])
+        self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(owner_push.status_code, 200)
+        self.assertEqual(
+            {item["entityId"] for item in owner_pull.json()["changes"]},
+            {
+                "33333333-3333-3333-3333-333333333333",
+                "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            },
+        )
+
+    def test_all_initial_agent_scopes_have_separate_enforced_routes(self):
+        storage = InMemoryHouseholdStorage()
+        fastapi_app.dependency_overrides[cloud_service] = lambda: CloudService(storage)
+        fastapi_app.dependency_overrides[agent_access_service] = lambda: AgentAccessService(storage)
+        owner_headers = {"Authorization": "Bearer valid-test-token"}
+        device_id = "55555555-5555-5555-5555-555555555555"
+        account_id = "66666666-6666-6666-6666-666666666666"
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            self.client.post(
+                "/api/v1/bootstrap",
+                headers=owner_headers,
+                json={"deviceId": device_id, "name": "iPhone", "platform": "ios", "appVersion": "0.1.0"},
+            )
+            self.activate_empty_workspace(storage, device_id)
+            seeded = self.client.post(
+                "/api/v1/sync/push",
+                headers=owner_headers,
+                json={"deviceId": device_id, "mutations": [
+                    {
+                        "mutationId": "77777777-7777-7777-7777-777777777777",
+                        "deviceId": device_id,
+                        "sequence": 1,
+                        "entityType": "assetAccount",
+                        "entityId": account_id,
+                        "action": "create",
+                        "occurredAt": "2026-08-05T00:00:00Z",
+                        "payload": {"name": "Home", "amountInFen": 1000},
+                    },
+                    {
+                        "mutationId": "88888888-8888-8888-8888-888888888888",
+                        "deviceId": device_id,
+                        "sequence": 2,
+                        "entityType": "paymentChannel",
+                        "entityId": "cash",
+                        "action": "create",
+                        "occurredAt": "2026-08-05T00:00:00Z",
+                        "payload": {
+                            "name": "Cash",
+                            "symbolName": "banknote",
+                            "assetName": None,
+                            "sortOrder": 0,
+                            "isArchived": False,
+                            "isSystem": False,
+                        },
+                    },
+                ]},
+            )
+            connection = self.client.post(
+                "/api/v1/agent-connections",
+                headers=owner_headers,
+                json={"name": "Full agent", "scopes": [
+                    "ledger.read", "ledger.entry.create", "assets.read",
+                    "assets.snapshot.create", "reference-data.read",
+                ]},
+            )
+            restricted = self.client.post(
+                "/api/v1/agent-connections",
+                headers=owner_headers,
+                json={"name": "Ledger only", "scopes": ["ledger.read"]},
+            )
+        self.assertEqual(seeded.status_code, 200)
+        token = connection.json()["accessToken"]
+        agent_headers = {"Authorization": f"Bearer {token}"}
+
+        assets = self.client.get("/agent/v1/assets", headers=agent_headers)
+        references = self.client.get("/agent/v1/reference-data", headers=agent_headers)
+        ledger = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
+        snapshot_body = {
+            "id": "99999999-9999-9999-9999-999999999999",
+            "operationId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "accountId": account_id,
+            "amountInFen": 1200,
+            "observedAt": "2026-08-05T01:00:00Z",
+        }
+        snapshot = self.client.post(
+            "/agent/v1/assets/snapshots", headers=agent_headers, json=snapshot_body
+        )
+        snapshot_replay = self.client.post(
+            "/agent/v1/assets/snapshots", headers=agent_headers, json=snapshot_body
+        )
+        denied = self.client.get(
+            "/agent/v1/assets",
+            headers={"Authorization": f"Bearer {restricted.json()['accessToken']}"},
+        )
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            audit = self.client.get("/api/v1/audit?limit=100", headers=owner_headers)
+
+        self.assertEqual(assets.status_code, 200)
+        self.assertEqual(assets.json()["items"][0]["entityType"], "assetAccount")
+        self.assertEqual(references.status_code, 200)
+        self.assertEqual(references.json()["items"][0]["entityType"], "paymentChannel")
+        self.assertEqual(ledger.status_code, 200)
+        self.assertEqual(snapshot.status_code, 200)
+        self.assertFalse(snapshot.json()["replayed"])
+        self.assertTrue(snapshot_replay.json()["replayed"])
+        self.assertEqual(denied.status_code, 403)
+        self.assertIn("insufficientScope", audit.text)
+        self.assertNotIn("amountInFen", audit.text)
 
 
 if __name__ == "__main__":
