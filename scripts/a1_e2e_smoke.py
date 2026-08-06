@@ -17,8 +17,9 @@ from azure.cosmos import CosmosClient
 from azure.identity import DefaultAzureCredential
 from firebase_admin import auth
 import httpx2
-from mcp import ClientSession
+from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import Implementation
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -155,24 +156,27 @@ async def _run_remote_mcp(
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=60,
     ) as http_client:
-        async with streamable_http_client(
+        transport = streamable_http_client(
             f"{base_url}/mcp",
             http_client=http_client,
-        ) as streams:
-            async with ClientSession(*streams[:2]) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                if [tool.name for tool in tools.tools] != [
-                    "ledger_read",
-                    "ledger_create",
-                    "assets_read",
-                    "assets_update",
-                    "categories_read",
-                    "channels_read",
-                ]:
-                    raise RuntimeError("Remote MCP tool surface is not the frozen six")
-                first = await session.call_tool("ledger_create", arguments)
-                replay = await session.call_tool("ledger_create", arguments)
+        )
+        async with Client(
+            transport,
+            mode="2026-07-28",
+            client_info=Implementation(name="anke-e2e", version="1"),
+        ) as client:
+            tools = await client.list_tools()
+            if [tool.name for tool in tools.tools] != [
+                "ledger_read",
+                "ledger_create",
+                "assets_read",
+                "assets_update",
+                "categories_read",
+                "channels_read",
+            ]:
+                raise RuntimeError("Remote MCP tool surface is not the frozen six")
+            first = await client.call_tool("ledger_create", arguments)
+            replay = await client.call_tool("ledger_create", arguments)
     if first.is_error or replay.is_error:
         raise RuntimeError("Remote MCP ledger write failed")
     first_payload = json.loads(first.content[0].text)
@@ -188,17 +192,24 @@ async def _assert_mcp_revoked(base_url: str, access_token: str) -> None:
             f"{base_url}/mcp",
             headers={
                 "Authorization": f"Bearer {access_token}",
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "tools/list",
                 "Accept": "application/json, text/event-stream",
                 "Content-Type": "application/json",
             },
             json={
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "initialize",
+                "method": "tools/list",
                 "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {"name": "revocation-check", "version": "1"},
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                        "io.modelcontextprotocol/clientInfo": {
+                            "name": "revocation-check",
+                            "version": "1",
+                        },
+                    },
                 },
             },
         )

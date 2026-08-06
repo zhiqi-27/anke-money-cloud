@@ -34,6 +34,12 @@ routes accept only API-bound tokens; Remote MCP accepts only MCP- or Skill-bound
 tokens. The persisted write source comes from this server-loaded connection,
 never from a write body or MCP tool argument.
 
+Remote MCP prefers the stateless `2026-07-28` wire protocol and temporarily
+accepts `2025-11-25` clients at the same endpoint. Protocol negotiation cannot
+change credentials, scopes, household selection, rate limits, idempotency, tool
+arguments, or audit behavior. The compatibility path owns no separate service or
+storage implementation.
+
 The owner may pause or resume an unexpired connection without changing its scopes,
 integration, tokens, or expiry; revoked connections cannot resume. Every accepted
 Agent request consumes the connection's shared 120-request, 60-second window.

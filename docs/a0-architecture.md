@@ -152,3 +152,18 @@ HTTP API, Remote MCP, and Skill. Excess requests and a five-in-five-minute known
 connection authentication anomaly append audit events. Audit events remain outside
 the Agent capability surface and can be removed only by the existing retention or
 separately authorized workspace/privacy erasure process.
+
+## Approved amendment · 2026-08-06 · MCP 2026 transport compatibility
+
+Remote MCP's canonical revision is `2026-07-28`: each request is self-describing,
+the primary client flow performs no initialize handshake, and the server keeps no
+protocol session. To avoid excluding host products whose embedded MCP client has
+not yet adopted that breaking revision, the same stateless endpoint also accepts
+the `2025-11-25` initialize-handshake wire format.
+
+Compatibility is confined to transport negotiation. Both revisions call the same
+six tools and the same authorization, service, storage, idempotency, rate-limit,
+and audit code. There is no data-model or migration impact and no dual business
+API. The legacy adapter may be removed after post-launch interoperability evidence
+shows the supported Agent products use `2026-07-28`; rollback before that point is
+to retain the adapter, not to downgrade the canonical protocol or data contract.

@@ -96,5 +96,8 @@ not promote the Development deployment recorded earlier in this file.
 - [x] One independent HTTP client and one official Streamable HTTP MCP client
       operate in the same household with separate credentials and attributable
       audit evidence.
+- [x] The official MCP v2 client operates with canonical `2026-07-28` stateless
+      requests, while a `2025-11-25` initialize client reaches the identical
+      six-tool authorization and service boundary.
 - [x] Current A3/A4 code is deployed to Development and passes lifecycle, rate,
       anomaly, malicious-parameter, immutable-audit, and two-client E2E.

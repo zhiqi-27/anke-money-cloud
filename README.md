@@ -72,7 +72,9 @@ Azure Functions locally. Do not populate or commit the example.
 - `GET /agent/v1/categories` — reads categories with `categories:read`
 - `GET /agent/v1/channels` — reads payment channels with `channels:read`
 - `POST /mcp` — Remote MCP Streamable HTTP endpoint exposing the same six
-  capabilities through the shared application service
+  capabilities through the shared application service; `2026-07-28` is the
+  canonical stateless protocol, with a temporary `2025-11-25` transport adapter
+  for host products whose embedded MCP client has not yet upgraded
 
 The household is always resolved from the verified Firebase UID. Sync and
 migration payloads cannot choose a household or actor. A registered device uses

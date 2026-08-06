@@ -5,8 +5,9 @@ from uuid import uuid4
 from unittest.mock import patch
 
 import httpx2
-from mcp import ClientSession
+from mcp import Client, ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import Implementation
 
 from app.auth import AuthenticatedIdentity
 from app.main import fastapi_app
@@ -89,6 +90,14 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
             "category_id": "grocery",
             "amount_in_fen": 8_800,
         }
+        expected_tools = [
+            "ledger_read",
+            "ledger_create",
+            "assets_read",
+            "assets_update",
+            "categories_read",
+            "channels_read",
+        ]
 
         with patch("app.dependencies.get_household_storage", return_value=self.storage):
             async with fastapi_app.router.lifespan_context(fastapi_app):
@@ -119,19 +128,23 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
                     unauthorized = await unauthorized_client.post(
                         "/mcp",
                         headers={
+                            "MCP-Protocol-Version": "2026-07-28",
+                            "Mcp-Method": "tools/list",
                             "Accept": "application/json, text/event-stream",
                             "Content-Type": "application/json",
                         },
                         json={
                             "jsonrpc": "2.0",
                             "id": 1,
-                            "method": "initialize",
+                            "method": "tools/list",
                             "params": {
-                                "protocolVersion": "2025-11-25",
-                                "capabilities": {},
-                                "clientInfo": {
-                                    "name": "unauthorized-test",
-                                    "version": "1",
+                                "_meta": {
+                                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                    "io.modelcontextprotocol/clientCapabilities": {},
+                                    "io.modelcontextprotocol/clientInfo": {
+                                        "name": "unauthorized-test",
+                                        "version": "1",
+                                    },
                                 },
                             },
                         },
@@ -146,17 +159,24 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
                     wrong_integration = await wrong_integration_client.post(
                         "/mcp",
                         headers={
+                            "MCP-Protocol-Version": "2026-07-28",
+                            "Mcp-Method": "tools/list",
                             "Accept": "application/json, text/event-stream",
                             "Content-Type": "application/json",
                         },
                         json={
                             "jsonrpc": "2.0",
                             "id": 2,
-                            "method": "initialize",
+                            "method": "tools/list",
                             "params": {
-                                "protocolVersion": "2025-11-25",
-                                "capabilities": {},
-                                "clientInfo": {"name": "api-token", "version": "1"},
+                                "_meta": {
+                                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                    "io.modelcontextprotocol/clientCapabilities": {},
+                                    "io.modelcontextprotocol/clientInfo": {
+                                        "name": "api-token",
+                                        "version": "1",
+                                    },
+                                },
                             },
                         },
                     )
@@ -166,26 +186,33 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
                     base_url="http://testserver",
                     headers={"Authorization": f"Bearer {connection.access_token}"},
                 ) as http_client:
-                    async with streamable_http_client(
-                        "http://testserver/mcp",
-                        http_client=http_client,
-                    ) as streams:
-                        async with ClientSession(*streams[:2]) as session:
-                            await session.initialize()
-                            tools = await session.list_tools()
+                    legacy_transport = streamable_http_client(
+                        "http://testserver/mcp", http_client=http_client
+                    )
+                    async with legacy_transport as streams:
+                        async with ClientSession(*streams[:2]) as legacy_session:
+                            initialized = await legacy_session.initialize()
+                            self.assertEqual(initialized.protocol_version, "2025-11-25")
+                            legacy_tools = await legacy_session.list_tools()
                             self.assertEqual(
-                                [tool.name for tool in tools.tools],
-                                [
-                                    "ledger_read",
-                                    "ledger_create",
-                                    "assets_read",
-                                    "assets_update",
-                                    "categories_read",
-                                    "channels_read",
-                                ],
+                                [tool.name for tool in legacy_tools.tools], expected_tools
                             )
-                            first = await session.call_tool("ledger_create", arguments)
-                            replay = await session.call_tool("ledger_create", arguments)
+
+                    client_transport = streamable_http_client(
+                        "http://testserver/mcp", http_client=http_client
+                    )
+                    async with Client(
+                        client_transport,
+                        mode="2026-07-28",
+                        client_info=Implementation(name="anke-test", version="1"),
+                    ) as client:
+                        tools = await client.list_tools()
+                        self.assertEqual(
+                            [tool.name for tool in tools.tools],
+                            expected_tools,
+                        )
+                        first = await client.call_tool("ledger_create", arguments)
+                        replay = await client.call_tool("ledger_create", arguments)
 
         self.assertFalse(first.is_error)
         self.assertFalse(replay.is_error)
