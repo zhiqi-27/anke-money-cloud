@@ -8,7 +8,7 @@ from app.models import (
     AgentConnectionCreate,
     AgentConnectionCreated,
     AgentConnectionView,
-    AgentAssetSnapshotCreate,
+    AgentAssetUpdate,
     AgentEntityCreateResponse,
     AgentEntityListResponse,
     AgentEntityView,
@@ -83,6 +83,34 @@ class CloudService:
             str(connection_id),
         )
 
+    def pause_agent_connection(
+        self,
+        identity: AuthenticatedIdentity,
+        connection_id: UUID,
+    ) -> AgentConnectionView:
+        household_id = self._required_household(identity.uid)
+        self._require_active_household(household_id)
+        return self._storage.pause_agent_connection(
+            household_id,
+            Actor(type=ActorType.user, id=identity.uid),
+            str(connection_id),
+            datetime.now(UTC),
+        )
+
+    def resume_agent_connection(
+        self,
+        identity: AuthenticatedIdentity,
+        connection_id: UUID,
+    ) -> AgentConnectionView:
+        household_id = self._required_household(identity.uid)
+        self._require_active_household(household_id)
+        return self._storage.resume_agent_connection(
+            household_id,
+            Actor(type=ActorType.user, id=identity.uid),
+            str(connection_id),
+            datetime.now(UTC),
+        )
+
     def agent_create_ledger_entry(
         self,
         principal: AgentPrincipal,
@@ -90,11 +118,12 @@ class CloudService:
     ) -> AgentLedgerCreateResponse:
         self._require_active_household(str(principal.household_id))
         self._require_agent_scope(
-            principal, AgentScope.ledger_entry_create, "ledger.create"
+            principal, AgentScope.ledger_create, "ledger.create"
         )
         storage_request = LedgerEntryCreate(
             **request.model_dump(),
             household_id=principal.household_id,
+            source=principal.integration,
         )
         result = self._storage.create_ledger_entry(
             storage_request,
@@ -128,30 +157,44 @@ class CloudService:
             limit,
         )
 
-    def agent_list_reference_data(
+    def agent_list_categories(
         self,
         principal: AgentPrincipal,
         limit: int,
     ) -> AgentEntityListResponse:
         return self._agent_list(
             principal,
-            AgentScope.reference_data_read,
-            {"paymentChannel", "category"},
-            "reference-data.read",
+            AgentScope.categories_read,
+            {"category"},
+            "categories.read",
             limit,
         )
 
-    def agent_create_asset_snapshot(
+    def agent_list_channels(
         self,
         principal: AgentPrincipal,
-        request: AgentAssetSnapshotCreate,
+        limit: int,
+    ) -> AgentEntityListResponse:
+        return self._agent_list(
+            principal,
+            AgentScope.channels_read,
+            {"paymentChannel"},
+            "channels.read",
+            limit,
+        )
+
+    def agent_update_asset(
+        self,
+        principal: AgentPrincipal,
+        account_id: UUID,
+        request: AgentAssetUpdate,
     ) -> AgentEntityCreateResponse:
         self._require_active_household(str(principal.household_id))
         self._require_agent_scope(
-            principal, AgentScope.assets_snapshot_create, "assets.snapshot.create"
+            principal, AgentScope.assets_update, "assets.update"
         )
         account = self._storage.read_household_document(
-            str(principal.household_id), str(request.account_id)
+            str(principal.household_id), str(account_id)
         )
         if (
             account is None
@@ -163,23 +206,72 @@ class CloudService:
         payload = request.model_dump(
             by_alias=True,
             mode="json",
-            exclude={"id", "operation_id"},
+            exclude={"snapshot_id", "idempotency_key"},
         )
+        payload["accountId"] = str(account_id)
+        before = self._asset_balance_before(str(principal.household_id), account)
+        after = {
+            "entityType": "assetSnapshot",
+            "entityId": str(request.snapshot_id),
+            "revision": 1,
+            "accountId": str(account_id),
+            "amountInFen": request.amount_in_fen,
+            "observedAt": request.observed_at.isoformat().replace("+00:00", "Z"),
+            "memberProfileId": request.member_profile_id,
+        }
         document, replayed = self._storage.create_agent_entity(
             str(principal.household_id),
             actor,
             "assetSnapshot",
-            str(request.id),
-            str(request.operation_id),
-            AgentScope.assets_snapshot_create.value,
-            "assets.snapshot.create",
+            str(request.snapshot_id),
+            str(request.idempotency_key),
+            AgentScope.assets_update.value,
+            "assets.update",
+            principal.integration.value,
             payload,
+            {"before": before, "after": after},
             datetime.now(UTC),
         )
         return AgentEntityCreateResponse(
             item=self._agent_entity_view(document),
             replayed=replayed,
         )
+
+    def _asset_balance_before(self, household_id: str, account: dict) -> dict:
+        snapshots = self._storage.list_agent_entities(
+            household_id, {"assetSnapshot"}, 500
+        )
+        matching = [
+            item
+            for item in snapshots
+            if (item.get("payload") or {}).get("accountId") == account["id"]
+        ]
+        if matching:
+            latest = max(
+                matching,
+                key=lambda item: (
+                    (item.get("payload") or {}).get("observedAt", ""),
+                    item.get("updatedAt", ""),
+                ),
+            )
+            latest_payload = latest.get("payload") or {}
+            return {
+                "entityType": "assetSnapshot",
+                "entityId": latest["id"],
+                "revision": latest.get("revision"),
+                "accountId": account["id"],
+                "amountInFen": latest_payload.get("amountInFen"),
+                "observedAt": latest_payload.get("observedAt"),
+                "memberProfileId": latest_payload.get("memberProfileId"),
+            }
+        account_payload = account.get("payload") or account
+        return {
+            "entityType": "assetAccount",
+            "entityId": account["id"],
+            "revision": account.get("revision"),
+            "accountId": account["id"],
+            "amountInFen": account_payload.get("amountInFen"),
+        }
 
     def push(
         self,

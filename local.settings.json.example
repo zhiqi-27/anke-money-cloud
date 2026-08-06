@@ -18,6 +18,10 @@
     "ANKE_COSMOS_IDENTITIES_CONTAINER": "anke_identities",
     "ANKE_COSMOS_EXPECTED_ACCOUNT_NAME": "cosmos-anke-money-dev-zq01",
     "ANKE_COSMOS_ALLOW_SMOKE_WRITE": "false",
+    "ANKE_AGENT_REQUESTS_PER_MINUTE": "120",
+    "ANKE_AGENT_FAILED_AUTH_THRESHOLD": "5",
+    "ANKE_MCP_ALLOWED_HOSTS": "testserver,localhost:*,127.0.0.1:*",
+    "ANKE_MCP_ALLOWED_ORIGINS": "",
     "AZURE_CLIENT_ID": "",
     "ANKE_COSMOS_KEY": ""
   },

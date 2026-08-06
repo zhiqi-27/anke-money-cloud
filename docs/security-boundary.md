@@ -15,16 +15,31 @@ status, agent grants, and resource ownership are server-side authorization check
 - Every household request resolves active membership before storage access.
 - Every storage point operation includes the resolved `householdId` partition key.
 - Agent read and write scopes are separate, visible, expiring, and revocable. The
-  only 1.0 scopes are `ledger.read`, `ledger.entry.create`, `assets.read`,
-  `assets.snapshot.create`, and `reference-data.read`.
+  only A2 scopes are `ledger:read`, `ledger:create`, `assets:read`,
+  `assets:update`, `categories:read`, and `channels:read`.
 - Revocation must be enforced on the next request, not only at token issuance.
 - Internal smoke tooling is never an end-user API and cannot run in Production.
 
 Read-only grants default to 24 hours and are capped at 7 days. A grant containing
-either create scope defaults to 1 hour and is capped at 24 hours. Access tokens are
-capped at 15 minutes and cannot refresh past the parent grant. Update, delete,
-member management, settings, migration, export, authorization management, and audit
-log scopes are not issued in 1.0.
+either write scope defaults to 1 hour and is capped at 24 hours. Access tokens are
+capped at 15 minutes and cannot refresh past the parent grant. Ledger history
+updates, permanent delete, member management, settings, migration, export,
+authorization management, and audit-log scopes are not issued in A2. Asset update
+is limited to one appended snapshot. Remote MCP verifies the same revocable
+connection credential on every request and never receives a client-selected
+household ID.
+
+Each connection is bound at creation to `api`, `mcp`, or `skill`. Agent HTTP
+routes accept only API-bound tokens; Remote MCP accepts only MCP- or Skill-bound
+tokens. The persisted write source comes from this server-loaded connection,
+never from a write body or MCP tool argument.
+
+The owner may pause or resume an unexpired connection without changing its scopes,
+integration, tokens, or expiry; revoked connections cannot resume. Every accepted
+Agent request consumes the connection's shared 120-request, 60-second window.
+Requests over the limit are rejected and audited. Five invalid-token attempts that
+name a known connection within five minutes create one deduplicated anomaly audit
+event. Invalid attempts never mutate scopes or permanently lock the valid grant.
 
 ## Secrets
 

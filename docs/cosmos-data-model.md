@@ -81,27 +81,38 @@ authority. Agent Cloud 1.0 still has one authenticating owner.
 
 ### `operation`
 
-The operation document ID is namespaced from the request operation ID:
-`operation:{operationId}`. It stores request type, status, result entity ID, actor,
-and accepted revision. Creating this document in the same transactional batch is
-the idempotency claim.
+The Agent operation document ID is namespaced from the request idempotency key:
+`operation:{idempotencyKey}`. It stores request hash, source, scope, action, result
+entity ID, verified connection actor, accepted revision, and redacted change
+summary. Creating this document in the same transactional batch is the idempotency
+claim. A replay must match its original request hash.
 
 ### `auditEvent`
 
-The audit document ID is `audit:{operationId}`. It stores scope, actor, action,
-target type/ID, outcome, request correlation ID, and a redacted difference summary.
+The Agent audit document ID is `audit:{idempotencyKey}`. It stores scope, actor,
+source, action, target type/ID, outcome, revisions, idempotency key, and a redacted
+difference summary.
 It must not store authorization tokens, full notes, or whole before/after documents.
 
 ### Agent authorization
 
 `agentConnection` stores connection identity and lifecycle. `authorizationGrant`
-stores only the frozen scopes (`ledger.read`, `ledger.entry.create`, `assets.read`,
-`assets.snapshot.create`, and `reference-data.read`), expiry, revocation, and
-connection reference. Read-only grants default to 24 hours and are capped at 7
+stores only the frozen scopes (`ledger:read`, `ledger:create`, `assets:read`,
+`assets:update`, `categories:read`, and `channels:read`), expiry, revocation, and
+connection reference. It also stores one immutable integration (`api`, `mcp`, or
+`skill`) used by the server as the trusted operation source. Read-only grants
+default to 24 hours and are capped at 7
 days; grants containing a create scope default to 1 hour and are capped at 24
 hours. Access tokens are capped at 15 minutes and cannot outlive the grant. Tokens
 are stored only as hashes or encrypted references; raw bearer tokens are never
 persisted.
+
+Additive lifecycle metadata includes nullable `lastUsedAt`, a 60-second request
+window start/count, and a five-minute failed-auth window start/count plus the last
+deduplicated anomaly threshold. Pause/resume update only lifecycle status and
+`updatedAt`; they never change scopes, integration, tokens, or `grantExpiresAt`.
+Rate-limit and suspicious-authentication events are ordinary append-only redacted
+audit documents in the same household partition.
 
 ### Tombstones and retention
 

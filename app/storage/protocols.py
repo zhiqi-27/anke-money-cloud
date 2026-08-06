@@ -61,6 +61,31 @@ class HouseholdStorage(Protocol):
         connection_id: str,
     ) -> AgentConnectionView: ...
 
+    def pause_agent_connection(
+        self,
+        household_id: str,
+        actor: Actor,
+        connection_id: str,
+        now: datetime,
+    ) -> AgentConnectionView: ...
+
+    def resume_agent_connection(
+        self,
+        household_id: str,
+        actor: Actor,
+        connection_id: str,
+        now: datetime,
+    ) -> AgentConnectionView: ...
+
+    def consume_agent_request(
+        self,
+        household_id: str,
+        connection_id: str,
+        now: datetime,
+        limit: int,
+        window_seconds: int,
+    ) -> bool: ...
+
     def authenticate_agent_token(
         self,
         household_id: str,
@@ -85,6 +110,8 @@ class HouseholdStorage(Protocol):
         connection_id: str,
         reason: str,
         now,
+        threshold: int,
+        window_seconds: int,
     ) -> None: ...
 
     def list_agent_entities(
@@ -100,10 +127,12 @@ class HouseholdStorage(Protocol):
         actor: Actor,
         entity_type: str,
         entity_id: str,
-        operation_id: str,
+        idempotency_key: str,
         scope: str,
         action: str,
+        source: str,
         payload: dict,
+        change_summary: dict,
         now: datetime,
     ) -> tuple[dict, bool]: ...
 

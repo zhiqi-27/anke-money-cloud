@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -15,6 +16,9 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from azure.cosmos import CosmosClient
 from azure.identity import DefaultAzureCredential
 from firebase_admin import auth
+import httpx2
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +85,37 @@ def _request(
         raise RuntimeError(f"{method} {path} failed at the network boundary") from None
 
 
+def _expect_http_error(
+    base_url: str,
+    method: str,
+    path: str,
+    *,
+    token: str,
+    expected_status: int,
+    payload: dict | None = None,
+) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {token}"}
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload, ensure_ascii=False).encode()
+    request = urllib.request.Request(
+        f"{base_url}{path}", data=data, headers=headers, method=method
+    )
+    try:
+        urllib.request.urlopen(request, timeout=60)
+    except urllib.error.HTTPError as error:
+        error.read()
+        if error.code != expected_status:
+            raise RuntimeError(
+                f"{method} {path} returned HTTP {error.code}, expected {expected_status}"
+            ) from None
+        return {name.lower(): value for name, value in error.headers.items()}
+    except urllib.error.URLError:
+        raise RuntimeError(f"{method} {path} failed at the network boundary") from None
+    raise RuntimeError(f"{method} {path} unexpectedly succeeded")
+
+
 def _migration_digest(items: list[MigrationItem]) -> str:
     canonical = [
         item.model_dump(by_alias=True, mode="json", exclude_none=True)
@@ -92,6 +127,106 @@ def _migration_digest(items: list[MigrationItem]) -> str:
         canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+async def _run_remote_mcp(
+    base_url: str,
+    access_token: str,
+    channel_id: str,
+    category_id: str,
+    timestamp: str,
+    month_start: str,
+) -> tuple[str, str]:
+    entry_id = str(uuid4())
+    idempotency_key = str(uuid4())
+    arguments = {
+        "id": entry_id,
+        "idempotency_key": idempotency_key,
+        "kind": "transaction",
+        "direction": "expense",
+        "occurred_at": timestamp,
+        "month_start": month_start,
+        "channel_id": channel_id,
+        "category_id": category_id,
+        "amount_in_fen": 2_400,
+        "note": "synthetic skill write",
+    }
+    async with httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=60,
+    ) as http_client:
+        async with streamable_http_client(
+            f"{base_url}/mcp",
+            http_client=http_client,
+        ) as streams:
+            async with ClientSession(*streams[:2]) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                if [tool.name for tool in tools.tools] != [
+                    "ledger_read",
+                    "ledger_create",
+                    "assets_read",
+                    "assets_update",
+                    "categories_read",
+                    "channels_read",
+                ]:
+                    raise RuntimeError("Remote MCP tool surface is not the frozen six")
+                first = await session.call_tool("ledger_create", arguments)
+                replay = await session.call_tool("ledger_create", arguments)
+    if first.is_error or replay.is_error:
+        raise RuntimeError("Remote MCP ledger write failed")
+    first_payload = json.loads(first.content[0].text)
+    replay_payload = json.loads(replay.content[0].text)
+    if first_payload["replayed"] or not replay_payload["replayed"]:
+        raise RuntimeError("Remote MCP idempotent replay failed")
+    return entry_id, idempotency_key
+
+
+async def _assert_mcp_revoked(base_url: str, access_token: str) -> None:
+    async with httpx2.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            f"{base_url}/mcp",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "revocation-check", "version": "1"},
+                },
+            },
+        )
+    if response.status_code != 401:
+        raise RuntimeError("Revoked Skill connection remained usable through MCP")
+
+
+async def _run_rate_burst(base_url: str, access_token: str) -> None:
+    limits = httpx2.Limits(max_connections=16, max_keepalive_connections=16)
+    async with httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {access_token}"},
+        limits=limits,
+        timeout=60,
+    ) as client:
+        responses = await asyncio.gather(*(
+            client.get(f"{base_url}/agent/v1/categories")
+            for _ in range(121)
+        ))
+    statuses = [response.status_code for response in responses]
+    if statuses.count(200) != 120 or statuses.count(429) != 1:
+        raise RuntimeError(
+            f"Agent burst rate limit returned unexpected statuses: "
+            f"200={statuses.count(200)}, 429={statuses.count(429)}, "
+            f"other={len(statuses) - statuses.count(200) - statuses.count(429)}"
+        )
+    limited = next(response for response in responses if response.status_code == 429)
+    if limited.headers.get("retry-after") != "60":
+        raise RuntimeError("Agent rate limit omitted the 60-second retry boundary")
 
 
 def _cleanup_cosmos(settings: Settings, uid: str, household_id: str) -> int:
@@ -294,22 +429,53 @@ def main() -> int:
             token=id_token,
             payload={
                 "name": "A1 synthetic agent",
+                "integration": "api",
                 "scopes": [
-                    "ledger.read",
-                    "ledger.entry.create",
-                    "assets.read",
-                    "assets.snapshot.create",
-                    "reference-data.read",
+                    "ledger:read",
+                    "ledger:create",
+                    "assets:read",
+                    "assets:update",
+                    "categories:read",
+                    "channels:read",
                 ],
                 "grantDurationSeconds": 3_600,
             },
         )
         agent_token = connection["accessToken"]
+        original_connection_contract = {
+            "integration": connection["integration"],
+            "scopes": connection["scopes"],
+            "grantExpiresAt": connection["grantExpiresAt"],
+        }
+        _, paused = _request(
+            base_url,
+            "POST",
+            f"/api/v1/agent-connections/{connection['connectionId']}/pause",
+            token=id_token,
+        )
+        _expect_http_error(
+            base_url,
+            "GET",
+            "/agent/v1/ledger/entries",
+            token=agent_token,
+            expected_status=401,
+        )
+        _, resumed = _request(
+            base_url,
+            "POST",
+            f"/api/v1/agent-connections/{connection['connectionId']}/resume",
+            token=id_token,
+        )
+        if paused["status"] != "paused" or resumed["status"] != "active":
+            raise RuntimeError("Agent pause or resume lifecycle failed")
+        if any(resumed[key] != value for key, value in original_connection_contract.items()):
+            raise RuntimeError("Agent lifecycle changed an immutable grant field")
+
         remote_ledger_id = str(uuid4())
         remote_operation_id = str(uuid4())
         remote_payload = {
             "id": remote_ledger_id,
-            "operationId": remote_operation_id,
+            "idempotencyKey": remote_operation_id,
             "kind": "transaction",
             "direction": "expense",
             "occurredAt": timestamp,
@@ -336,31 +502,96 @@ def main() -> int:
         if remote_create["replayed"] or not remote_replay["replayed"]:
             raise RuntimeError("Agent idempotent replay failed")
 
+        invalid_payloads = [
+            {**remote_payload, "id": str(uuid4()), "idempotencyKey": str(uuid4()), "amountInFen": 9_000_000_000_000_001},
+            {**remote_payload, "id": str(uuid4()), "idempotencyKey": str(uuid4()), "occurredAt": "not-a-date"},
+            {**remote_payload, "id": str(uuid4()), "idempotencyKey": str(uuid4()), "categoryId": "x" * 129},
+        ]
+        for invalid_payload in invalid_payloads:
+            _expect_http_error(
+                base_url,
+                "POST",
+                "/agent/v1/ledger/entries",
+                token=agent_token,
+                expected_status=422,
+                payload=invalid_payload,
+            )
+
+        token_parts = agent_token.split(".", maxsplit=2)
+        invalid_known_token = f"{token_parts[0]}.{token_parts[1]}.invalid"
+        for _ in range(5):
+            _expect_http_error(
+                base_url,
+                "GET",
+                "/agent/v1/ledger/entries",
+                token=invalid_known_token,
+                expected_status=401,
+            )
+        _request(base_url, "GET", "/agent/v1/ledger/entries", token=agent_token)
+
         agent_snapshot_id = str(uuid4())
         agent_snapshot_operation = str(uuid4())
         snapshot_payload = {
-            "id": agent_snapshot_id,
-            "operationId": agent_snapshot_operation,
-            "accountId": account_id,
+            "snapshotId": agent_snapshot_id,
+            "idempotencyKey": agent_snapshot_operation,
             "amountInFen": 101_200,
             "observedAt": timestamp,
         }
         _request(
             base_url,
-            "POST",
-            "/agent/v1/assets/snapshots",
+            "PATCH",
+            f"/agent/v1/assets/{account_id}",
             token=agent_token,
             payload=snapshot_payload,
         )
         _, snapshot_replay = _request(
             base_url,
-            "POST",
-            "/agent/v1/assets/snapshots",
+            "PATCH",
+            f"/agent/v1/assets/{account_id}",
             token=agent_token,
             payload=snapshot_payload,
         )
         if not snapshot_replay["replayed"]:
             raise RuntimeError("Agent asset snapshot replay failed")
+
+        _, skill_connection = _request(
+            base_url,
+            "POST",
+            "/api/v1/agent-connections",
+            token=id_token,
+            payload={
+                "name": "A2 synthetic Skill",
+                "integration": "skill",
+                "scopes": ["ledger:read", "ledger:create"],
+                "grantDurationSeconds": 3_600,
+            },
+        )
+        skill_token = skill_connection["accessToken"]
+        skill_ledger_id, skill_idempotency_key = asyncio.run(
+            _run_remote_mcp(
+                base_url,
+                skill_token,
+                channel_id,
+                category_id,
+                timestamp,
+                now.date().replace(day=1).isoformat(),
+            )
+        )
+
+        _, rate_connection = _request(
+            base_url,
+            "POST",
+            "/api/v1/agent-connections",
+            token=id_token,
+            payload={
+                "name": "A4 synthetic rate client",
+                "integration": "api",
+                "scopes": ["categories:read"],
+                "grantDurationSeconds": 3_600,
+            },
+        )
+        rate_token = rate_connection["accessToken"]
+        asyncio.run(_run_rate_burst(base_url, rate_token))
 
         offline_ledger_id = str(uuid4())
         offline_mutation_id = str(uuid4())
@@ -405,6 +636,7 @@ def main() -> int:
         required_ids = {
             migrated_ledger_id,
             remote_ledger_id,
+            skill_ledger_id,
             offline_ledger_id,
             agent_snapshot_id,
         }
@@ -470,15 +702,78 @@ def main() -> int:
 
         _request(base_url, "GET", "/agent/v1/ledger/entries", token=agent_token)
         _request(base_url, "GET", "/agent/v1/assets", token=agent_token)
-        _request(base_url, "GET", "/agent/v1/reference-data", token=agent_token)
+        _request(base_url, "GET", "/agent/v1/categories", token=agent_token)
+        _request(base_url, "GET", "/agent/v1/channels", token=agent_token)
         _, audit_page = _request(
             base_url, "GET", "/api/v1/audit?limit=200", token=id_token
         )
         audit_text = json.dumps(audit_page, ensure_ascii=False)
-        if "amountInFen" in audit_text or "synthetic offline write" in audit_text:
-            raise RuntimeError("Audit stream leaked financial payload")
+        if any(
+            note in audit_text
+            for note in (
+                "synthetic offline write",
+                "synthetic agent write",
+                "synthetic skill write",
+            )
+        ):
+            raise RuntimeError("Audit stream leaked private notes")
+        if not any(
+            event.get("source") == "api"
+            and event.get("actorId") == connection["connectionId"]
+            and event.get("scope") == "assets:update"
+            and event.get("idempotencyKey") == agent_snapshot_operation
+            and event.get("changeSummary", {}).get("after", {}).get("amountInFen") == 101_200
+            for event in audit_page["events"]
+        ):
+            raise RuntimeError(
+                "Agent write connection, scope, source, idempotency, or diff audit is missing"
+            )
+        if not any(
+            event.get("source") == "skill"
+            and event.get("actorId") == skill_connection["connectionId"]
+            and event.get("scope") == "ledger:create"
+            and event.get("idempotencyKey") == skill_idempotency_key
+            and event.get("targetId") == skill_ledger_id
+            and event.get("changeSummary", {}).get("after", {}).get("amountInFen") == 2_400
+            for event in audit_page["events"]
+        ):
+            raise RuntimeError(
+                "Skill MCP connection, scope, source, idempotency, or audit difference is missing"
+            )
         if not any(event["actorType"] == "agent" for event in audit_page["events"]):
             raise RuntimeError("Agent write audit event is missing")
+        required_security_actions = {
+            "agent.pause",
+            "agent.resume",
+            "agent.authentication.anomaly",
+            "agent.rate_limit",
+        }
+        observed_security_actions = {
+            event["action"] for event in audit_page["events"]
+        }
+        if not required_security_actions.issubset(observed_security_actions):
+            raise RuntimeError("Agent lifecycle, anomaly, or rate-limit audit is missing")
+        if sum(
+            event["action"] == "agent.authentication.anomaly"
+            and event.get("actorId") == connection["connectionId"]
+            for event in audit_page["events"]
+        ) != 1:
+            raise RuntimeError("Known-token anomaly audit was not deduplicated")
+        if sum(
+            event["action"] == "agent.rate_limit"
+            and event.get("actorId") == rate_connection["connectionId"]
+            for event in audit_page["events"]
+        ) != 1:
+            raise RuntimeError("Rate-limit audit was not deduplicated")
+        _, listed_connections = _request(
+            base_url, "GET", "/api/v1/agent-connections", token=id_token
+        )
+        listed_agent = next(
+            item for item in listed_connections
+            if item["connectionId"] == connection["connectionId"]
+        )
+        if not listed_agent.get("lastUsedAt"):
+            raise RuntimeError("Agent connection did not expose last use")
 
         _request(
             base_url,
@@ -493,6 +788,19 @@ def main() -> int:
                 raise
         else:
             raise RuntimeError("Revoked Agent token remained usable")
+        _request(
+            base_url,
+            "DELETE",
+            f"/api/v1/agent-connections/{skill_connection['connectionId']}",
+            token=id_token,
+        )
+        asyncio.run(_assert_mcp_revoked(base_url, skill_token))
+        _request(
+            base_url,
+            "DELETE",
+            f"/api/v1/agent-connections/{rate_connection['connectionId']}",
+            token=id_token,
+        )
     except Exception as error:
         primary_error = error
         raise
@@ -514,7 +822,7 @@ def main() -> int:
         if cleanup_error is not None and primary_error is not None:
             primary_error.add_note(f"A1 workspace cleanup also failed: {cleanup_error}")
 
-    print("Development A1 E2E passed")
+    print("Development A1+A2+A3+A4 E2E passed")
     print(f"target_host={EXPECTED_HOST}")
     print("migration=staged_replayed_activated")
     print("merge=migrated_agent_offline")
@@ -522,6 +830,10 @@ def main() -> int:
     print("deletion=tombstone")
     print("audit=redacted")
     print("revocation=immediate")
+    print("remote_mcp=six_tools_skill_source_idempotent")
+    print("agent_center=pause_resume_last_used_audited")
+    print("security=malicious_parameters_anomaly_rate_limit")
+    print("interoperability=independent_http_and_mcp_clients")
     print(f"cleanup_items={cleanup_items}")
     print("synthetic_user_deleted=true")
     return 0

@@ -11,16 +11,24 @@ from app.models.documents import EntryKind, LedgerDirection, LedgerEntryDocument
 
 
 class AgentScope(str, Enum):
-    ledger_read = "ledger.read"
-    ledger_entry_create = "ledger.entry.create"
-    assets_read = "assets.read"
-    assets_snapshot_create = "assets.snapshot.create"
-    reference_data_read = "reference-data.read"
+    ledger_read = "ledger:read"
+    ledger_create = "ledger:create"
+    assets_read = "assets:read"
+    assets_update = "assets:update"
+    categories_read = "categories:read"
+    channels_read = "channels:read"
+
+
+class OperationSource(str, Enum):
+    api = "api"
+    mcp = "mcp"
+    skill = "skill"
 
 
 class AgentConnectionCreate(APIModel):
     name: str = Field(min_length=1, max_length=120)
-    scopes: list[AgentScope] = Field(min_length=1, max_length=5)
+    scopes: list[AgentScope] = Field(min_length=1, max_length=6)
+    integration: OperationSource = OperationSource.api
     grant_duration_seconds: int | None = Field(default=None, ge=60)
 
     @model_validator(mode="after")
@@ -28,7 +36,7 @@ class AgentConnectionCreate(APIModel):
         if len(self.scopes) != len(set(self.scopes)):
             raise ValueError("Agent scopes must be unique")
         has_write = any(
-            scope in {AgentScope.ledger_entry_create, AgentScope.assets_snapshot_create}
+            scope in {AgentScope.ledger_create, AgentScope.assets_update}
             for scope in self.scopes
         )
         maximum = 24 * 60 * 60 if has_write else 7 * 24 * 60 * 60
@@ -44,9 +52,11 @@ class AgentConnectionView(APIModel):
     connection_id: UUID
     name: str
     scopes: list[AgentScope]
+    integration: OperationSource
     status: str
     grant_expires_at: datetime
     created_at: datetime
+    last_used_at: datetime | None = None
 
 
 class AgentConnectionCreated(AgentConnectionView):
@@ -64,11 +74,12 @@ class AgentPrincipal(APIModel):
     household_id: UUID
     connection_id: UUID
     scopes: list[AgentScope]
+    integration: OperationSource
 
 
 class AgentLedgerEntryCreate(APIModel):
     id: UUID
-    operation_id: UUID
+    idempotency_key: UUID
     kind: EntryKind
     direction: LedgerDirection
     occurred_at: datetime
@@ -106,10 +117,9 @@ class AgentLedgerCreateResponse(APIModel):
     replayed: bool
 
 
-class AgentAssetSnapshotCreate(APIModel):
-    id: UUID
-    operation_id: UUID
-    account_id: UUID
+class AgentAssetUpdate(APIModel):
+    snapshot_id: UUID
+    idempotency_key: UUID
     member_profile_id: str | None = Field(default=None, max_length=256)
     amount_in_fen: StrictInt = Field(ge=-9_000_000_000_000_000, le=9_000_000_000_000_000)
     observed_at: datetime

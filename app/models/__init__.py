@@ -8,6 +8,7 @@ from app.models.documents import (
     LedgerEntryDocument,
     OperationDocument,
     build_ledger_transaction_documents,
+    canonical_write_hash,
 )
 from app.models.sync import (
     BootstrapResponse,
@@ -36,7 +37,7 @@ from app.models.agent import (
     AgentConnectionCreated,
     AgentConnectionView,
     AgentAccessToken,
-    AgentAssetSnapshotCreate,
+    AgentAssetUpdate,
     AgentLedgerEntryCreate,
     AgentLedgerCreateResponse,
     AgentEntityCreateResponse,
@@ -44,6 +45,7 @@ from app.models.agent import (
     AgentEntityView,
     AgentPrincipal,
     AgentScope,
+    OperationSource,
 )
 
 __all__ = [
@@ -56,6 +58,7 @@ __all__ = [
     "LedgerEntryDocument",
     "OperationDocument",
     "build_ledger_transaction_documents",
+    "canonical_write_hash",
     "BootstrapResponse",
     "AuditEventView",
     "AuditListResponse",
@@ -80,7 +83,7 @@ __all__ = [
     "AgentConnectionCreated",
     "AgentConnectionView",
     "AgentAccessToken",
-    "AgentAssetSnapshotCreate",
+    "AgentAssetUpdate",
     "AgentLedgerEntryCreate",
     "AgentLedgerCreateResponse",
     "AgentEntityCreateResponse",
@@ -88,4 +91,5 @@ __all__ = [
     "AgentEntityView",
     "AgentPrincipal",
     "AgentScope",
+    "OperationSource",
 ]

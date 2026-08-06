@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from enum import Enum
+import hashlib
+import json
 from uuid import UUID
 
 from pydantic import (
@@ -49,7 +51,8 @@ class Actor(DocumentModel):
 
 class LedgerEntryCreate(DocumentModel):
     id: UUID
-    operation_id: UUID
+    idempotency_key: UUID
+    source: str = Field(pattern="^(api|mcp|skill)$")
     household_id: UUID
     kind: EntryKind
     direction: LedgerDirection
@@ -112,18 +115,27 @@ class LedgerEntryDocument(HouseholdDocument):
 class OperationDocument(HouseholdDocument):
     entity_type: str = "operation"
     action: str = "ledger.create"
+    scope: str = "ledger:create"
+    source: str = Field(pattern="^(api|mcp|skill)$")
+    idempotency_key: str
+    request_hash: str = Field(pattern="^[a-f0-9]{64}$")
     status: str = "accepted"
     result_entity_id: str
     accepted_revision: int = 1
+    change_summary: dict[str, object]
 
 
 class AuditEventDocument(HouseholdDocument):
     entity_type: str = "auditEvent"
-    scope: str = "ledger.entry.create"
+    scope: str = "ledger:create"
     action: str = "ledger.create"
+    source: str = Field(pattern="^(api|mcp|skill)$")
+    idempotency_key: str
     target_type: str = "ledgerEntry"
     target_id: str
     outcome: str = "accepted"
+    prior_revision: int | None = None
+    new_revision: int = 1
     change_summary: dict[str, object]
 
 
@@ -136,8 +148,32 @@ def build_ledger_transaction_documents(
         raise ValueError("now must include a timezone")
     now = now.astimezone(UTC)
     household_id = str(request.household_id)
-    operation_id = str(request.operation_id)
+    operation_id = str(request.idempotency_key)
     entry_id = str(request.id)
+    change_summary = {
+        "before": None,
+        "after": {
+            "entityType": "ledgerEntry",
+            "entityId": entry_id,
+            "revision": 1,
+            "kind": request.kind.value,
+            "direction": request.direction.value,
+            "occurredAt": request.occurred_at.isoformat().replace("+00:00", "Z"),
+            "monthStart": request.month_start.isoformat(),
+            "channelId": request.channel_id,
+            "categoryId": request.category_id,
+            "amountInFen": request.amount_in_fen,
+        },
+    }
+    request_hash = canonical_write_hash(
+        actor=actor,
+        scope="ledger:create",
+        action="ledger.create",
+        source=request.source,
+        entity_type="ledgerEntry",
+        entity_id=entry_id,
+        payload=request.model_dump(by_alias=True, mode="json"),
+    )
     common = {
         "household_id": household_id,
         "revision": 1,
@@ -149,7 +185,11 @@ def build_ledger_transaction_documents(
     }
     operation = OperationDocument(
         id=f"operation:{operation_id}",
+        source=request.source,
+        idempotency_key=operation_id,
+        request_hash=request_hash,
         result_entity_id=entry_id,
+        change_summary=change_summary,
         **common,
     )
     entry = LedgerEntryDocument(
@@ -166,12 +206,38 @@ def build_ledger_transaction_documents(
     )
     audit = AuditEventDocument(
         id=f"audit:{operation_id}",
+        source=request.source,
+        idempotency_key=operation_id,
         target_id=entry_id,
-        change_summary={
-            "created": True,
-            "kind": request.kind.value,
-            "direction": request.direction.value,
-        },
+        change_summary=change_summary,
         **common,
     )
     return operation, entry, audit
+
+
+def canonical_write_hash(
+    *,
+    actor: Actor,
+    scope: str,
+    action: str,
+    source: str,
+    entity_type: str,
+    entity_id: str,
+    payload: dict,
+) -> str:
+    canonical = {
+        "actor": actor.model_dump(mode="json"),
+        "scope": scope,
+        "action": action,
+        "source": source,
+        "entityType": entity_type,
+        "entityId": entity_id,
+        "payload": payload,
+    }
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()

@@ -53,22 +53,32 @@ business rules.
 
 ## A0-05 · Append-only and idempotent remote writes
 
-Every remote ledger create appends a distinct entry. Repeating a request with the
-same `operationId` returns the original result and cannot create a second entry.
-Repeating the same month, direction, channel, and category with a new operation ID
-creates a new entry.
+Every remote ledger create appends a distinct entry. Repeating the exact request
+with the same `idempotencyKey` returns the original result and cannot create a
+second entry. Reusing the key for different content is rejected. Repeating the
+same business data with a new key creates a new entry.
 
 The first remote scope set is deliberately narrow:
 
-- `ledger.read`
-- `ledger.entry.create`
-- `assets.read`
-- `assets.snapshot.create`
-- `reference-data.read`
+- `ledger:read`
+- `ledger:create`
+- `assets:read`
+- `assets:update`
+- `categories:read`
+- `channels:read`
 
-Update, delete, member management, settings, migration, export, authorization
-management, audit-log access, cross-household access, bill import, and unconfirmed
-bulk writes are excluded from 1.0.
+Permanent delete, authorization changes, other-household reads, bank/payment bill
+imports, and unconfirmed bulk asset updates are excluded. `assets:update` only
+appends one dated snapshot to one account; it cannot replace history.
+
+HTTP API, Remote MCP, and the Anke Money Skill share one service and storage
+implementation. Every Agent write records the verified connection identity, exact
+scope, stable idempotency key, operation source, structured before/after change,
+and owner-visible audit event in one household transaction.
+
+Operation source is an immutable `api`, `mcp`, or `skill` integration selected
+when the connection is created. The server derives it from the authenticated
+connection and rejects use through another transport; write payloads cannot set it.
 
 Read-only grants default to 24 hours and may extend to at most 7 days. A grant
 containing either create scope defaults to 1 hour and may extend to at most 24
@@ -129,3 +139,16 @@ The initial backend is a modular monolith: one private Git repository, one FastA
 application hosted through Azure Functions, injected storage/auth adapters, and one
 versioned API contract. API, Remote MCP, Skill, and infrastructure code remain in
 this repository until operational evidence justifies a split.
+
+## Approved amendment · 2026-08-06 · A3 lifecycle visibility and A4 abuse controls
+
+Agent connection documents add optional `lastUsedAt` and fixed-window request and
+failed-auth counters. These are additive lifecycle metadata, not financial records
+or new authority. Owner-only pause/resume endpoints preserve the original immutable
+scopes, integration, token hashes, and grant expiry; revoke remains irreversible.
+
+Every valid connection is limited to 120 authenticated requests per minute across
+HTTP API, Remote MCP, and Skill. Excess requests and a five-in-five-minute known-
+connection authentication anomaly append audit events. Audit events remain outside
+the Agent capability surface and can be removed only by the existing retention or
+separately authorized workspace/privacy erasure process.

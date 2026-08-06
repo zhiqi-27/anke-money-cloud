@@ -1,0 +1,13 @@
+interface:
+  display_name: "Anke Money Agent"
+  short_description: "Safely use one authorized Anke Money space"
+  default_prompt: "Use $anke-money-agent to review my authorized Anke Money data and confirm before any write."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "anke-money"
+      description: "Scoped Anke Money ledger and asset tools"
+      transport: "streamable_http"
+      url: "https://func-anke-money-dev-zq01.azurewebsites.net/mcp"
+policy:
+  allow_implicit_invocation: true

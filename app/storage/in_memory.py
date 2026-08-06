@@ -15,6 +15,7 @@ from app.models import (
     AgentConnectionView,
     AgentPrincipal,
     AgentScope,
+    OperationSource,
     AuditEventView,
     BootstrapResponse,
     DeviceRegistration,
@@ -30,6 +31,7 @@ from app.models import (
     SyncEntityType,
     SyncMutation,
     build_ledger_transaction_documents,
+    canonical_write_hash,
 )
 from app.storage.protocols import LedgerCreateResult, RetentionResult
 
@@ -167,6 +169,7 @@ class InMemoryHouseholdStorage:
             "householdId": household_id,
             "name": request.name,
             "scopes": [scope.value for scope in request.scopes],
+            "integration": request.integration.value,
             "status": "active",
             "tokenHash": token_hash,
             "refreshTokenHash": refresh_token_hash,
@@ -202,6 +205,87 @@ class InMemoryHouseholdStorage:
             self._record_authorization_audit(household_id, actor, document, "agent.revoke", "accepted")
             return self._connection_view(document)
 
+    def pause_agent_connection(
+        self,
+        household_id: str,
+        actor: Actor,
+        connection_id: str,
+        now: datetime,
+    ) -> AgentConnectionView:
+        with self._lock:
+            document = self._required_agent_connection(household_id, connection_id)
+            if document["status"] == "revoked":
+                raise ValueError("Revoked agent connection cannot be paused")
+            if document["status"] == "paused":
+                return self._connection_view(document)
+            document["status"] = "paused"
+            document["updatedAt"] = self._timestamp(now)
+            self._record_authorization_audit(
+                household_id, actor, document, "agent.pause", "accepted"
+            )
+            return self._connection_view(document)
+
+    def resume_agent_connection(
+        self,
+        household_id: str,
+        actor: Actor,
+        connection_id: str,
+        now: datetime,
+    ) -> AgentConnectionView:
+        with self._lock:
+            document = self._required_agent_connection(household_id, connection_id)
+            if document["status"] == "revoked":
+                raise ValueError("Revoked agent connection cannot be resumed")
+            if datetime.fromisoformat(
+                document["grantExpiresAt"].replace("Z", "+00:00")
+            ) <= now:
+                raise ValueError("Expired agent connection cannot be resumed")
+            if document["status"] == "active":
+                return self._connection_view(document)
+            document["status"] = "active"
+            document["updatedAt"] = self._timestamp(now)
+            self._record_authorization_audit(
+                household_id, actor, document, "agent.resume", "accepted"
+            )
+            return self._connection_view(document)
+
+    def consume_agent_request(
+        self,
+        household_id: str,
+        connection_id: str,
+        now: datetime,
+        limit: int,
+        window_seconds: int,
+    ) -> bool:
+        with self._lock:
+            document = self._required_agent_connection(household_id, connection_id)
+            window_start = self._window_start(
+                document.get("requestWindowStartedAt"), now, window_seconds
+            )
+            window_text = self._timestamp(window_start)
+            count = (
+                int(document.get("requestWindowCount", 0))
+                if document.get("requestWindowStartedAt") == window_text
+                else 0
+            ) + 1
+            document["requestWindowStartedAt"] = window_text
+            document["requestWindowCount"] = count
+            document["updatedAt"] = self._timestamp(now)
+            if count > limit:
+                if document.get("rateLimitAuditWindow") != window_text:
+                    document["rateLimitAuditWindow"] = window_text
+                    self._record_security_audit(
+                        household_id,
+                        document,
+                        action="agent.rate_limit",
+                        reason="requestRateExceeded",
+                        marker=window_text,
+                        count=count,
+                    )
+                return False
+            document["lastUsedAt"] = self._timestamp(now)
+            return True
+
     def authenticate_agent_token(
         self,
         household_id: str,
@@ -222,6 +306,7 @@ class InMemoryHouseholdStorage:
             household_id=UUID(household_id),
             connection_id=UUID(connection_id),
             scopes=[AgentScope(value) for value in document["scopes"]],
+            integration=OperationSource(document.get("integration", "api")),
         )
 
     def refresh_agent_token(
@@ -259,6 +344,7 @@ class InMemoryHouseholdStorage:
                     household_id=UUID(household_id),
                     connection_id=UUID(connection_id),
                     scopes=[AgentScope(value) for value in document["scopes"]],
+                    integration=OperationSource(document.get("integration", "api")),
                 ),
                 token_expires_at,
             )
@@ -269,27 +355,54 @@ class InMemoryHouseholdStorage:
         connection_id: str,
         reason: str,
         now: datetime,
+        threshold: int,
+        window_seconds: int,
     ) -> None:
-        document = self._items.get((household_id, connection_id))
-        if document is None:
-            return
-        timestamp = now.isoformat().replace("+00:00", "Z")
-        operation_id = f"agent.auth:{connection_id}:{timestamp}"
-        audit = {
-            "id": f"audit:{hashlib.sha256(operation_id.encode()).hexdigest()}",
-            "entityType": "auditEvent",
-            "householdId": household_id,
-            "actor": {"type": "agent", "id": connection_id},
-            "scope": "authentication",
-            "action": "agent.authenticate",
-            "targetId": connection_id,
-            "operationId": operation_id,
-            "outcome": "rejected",
-            "reason": reason,
-            "changeSummary": {},
-            "createdAt": timestamp,
-        }
-        self._items[(household_id, audit["id"])] = audit
+        with self._lock:
+            document = self._items.get((household_id, connection_id))
+            if document is None or document.get("entityType") != "agentConnection":
+                return
+            window_start = self._window_start(
+                document.get("failedAuthWindowStartedAt"), now, window_seconds
+            )
+            window_text = self._timestamp(window_start)
+            count = (
+                int(document.get("failedAuthWindowCount", 0))
+                if document.get("failedAuthWindowStartedAt") == window_text
+                else 0
+            ) + 1
+            document["failedAuthWindowStartedAt"] = window_text
+            document["failedAuthWindowCount"] = count
+            document["updatedAt"] = self._timestamp(now)
+            operation_id = f"agent.auth:{connection_id}:{self._timestamp(now)}"
+            self._items[(household_id, f"audit:{hashlib.sha256(operation_id.encode()).hexdigest()}")] = {
+                "id": f"audit:{hashlib.sha256(operation_id.encode()).hexdigest()}",
+                "entityType": "auditEvent",
+                "householdId": household_id,
+                "actor": {"type": "agent", "id": connection_id},
+                "scope": "authentication",
+                "action": "agent.authenticate",
+                "source": document.get("integration", "api"),
+                "targetId": connection_id,
+                "operationId": operation_id,
+                "outcome": "rejected",
+                "reason": reason,
+                "changeSummary": {},
+                "createdAt": self._timestamp(now),
+            }
+            if (
+                count >= threshold
+                and document.get("failedAuthAnomalyWindow") != window_text
+            ):
+                document["failedAuthAnomalyWindow"] = window_text
+                self._record_security_audit(
+                    household_id,
+                    document,
+                    action="agent.authentication.anomaly",
+                    reason="repeatedInvalidToken",
+                    marker=window_text,
+                    count=count,
+                )
 
     def list_agent_entities(
         self,
@@ -317,16 +430,31 @@ class InMemoryHouseholdStorage:
         actor: Actor,
         entity_type: str,
         entity_id: str,
-        operation_id: str,
+        idempotency_key: str,
         scope: str,
         action: str,
+        source: str,
         payload: dict,
+        change_summary: dict,
         now: datetime,
     ) -> tuple[dict, bool]:
-        operation_key = (household_id, f"operation:{operation_id}")
+        request_hash = canonical_write_hash(
+            actor=actor,
+            scope=scope,
+            action=action,
+            source=source,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload,
+        )
+        operation_key = (household_id, f"operation:{idempotency_key}")
         with self._lock:
             existing_operation = self._items.get(operation_key)
             if existing_operation is not None:
+                if existing_operation.get("requestHash") != request_hash:
+                    raise ValueError(
+                        "Idempotency key was already used for a different write"
+                    )
                 result = self._items.get(
                     (household_id, existing_operation["resultEntityId"])
                 )
@@ -346,8 +474,8 @@ class InMemoryHouseholdStorage:
                 "updatedAt": timestamp,
                 "deletedAt": None,
                 "actor": actor.model_dump(mode="json"),
-                "operationId": operation_id,
-                "lastAcceptedMutationId": operation_id,
+                "operationId": idempotency_key,
+                "lastAcceptedMutationId": idempotency_key,
                 "payload": payload,
             }
             operation = {
@@ -357,23 +485,31 @@ class InMemoryHouseholdStorage:
                 "actor": actor.model_dump(mode="json"),
                 "scope": scope,
                 "action": action,
+                "source": source,
+                "idempotencyKey": idempotency_key,
+                "requestHash": request_hash,
                 "status": "accepted",
                 "resultEntityId": entity_id,
+                "changeSummary": change_summary,
                 "createdAt": timestamp,
                 "updatedAt": timestamp,
             }
             audit = {
-                "id": f"audit:{operation_id}",
+                "id": f"audit:{idempotency_key}",
                 "entityType": "auditEvent",
                 "householdId": household_id,
                 "actor": actor.model_dump(mode="json"),
                 "scope": scope,
                 "action": action,
+                "source": source,
                 "targetId": entity_id,
-                "operationId": operation_id,
+                "operationId": idempotency_key,
+                "idempotencyKey": idempotency_key,
                 "outcome": "accepted",
                 "reason": None,
-                "changeSummary": {"created": True, "entityType": entity_type},
+                "priorRevision": change_summary.get("before", {}).get("revision") if change_summary.get("before") else None,
+                "newRevision": change_summary.get("after", {}).get("revision") if change_summary.get("after") else None,
+                "changeSummary": change_summary,
                 "createdAt": timestamp,
             }
             self._items[(household_id, entity_id)] = document
@@ -555,13 +691,18 @@ class InMemoryHouseholdStorage:
         events = [
             AuditEventView(
                 operation_id=item["operationId"],
+                idempotency_key=item.get("idempotencyKey", item["operationId"]),
                 actor_type=item["actor"]["type"],
                 actor_id=item["actor"]["id"],
                 scope=item.get("scope", "owner.sync"),
                 action=item["action"],
+                source=item.get("source", "api"),
                 target_id=item["targetId"],
                 outcome=item["outcome"],
                 reason=item.get("reason"),
+                prior_revision=item.get("priorRevision"),
+                new_revision=item.get("newRevision"),
+                change_summary=item.get("changeSummary", {}),
                 created_at=item["createdAt"],
             )
             for item in page
@@ -737,7 +878,11 @@ class InMemoryHouseholdStorage:
             "operationId": operation_id,
             "outcome": outcome,
             "reason": None,
-            "changeSummary": {"scopes": connection["scopes"], "status": connection["status"]},
+            "changeSummary": {
+                "scopes": connection["scopes"],
+                "integration": connection.get("integration", "api"),
+                "status": connection["status"],
+            },
             "createdAt": connection["updatedAt"],
         }
         self._items[(household_id, audit["id"])] = audit
@@ -748,10 +893,58 @@ class InMemoryHouseholdStorage:
             connection_id=document["id"],
             name=document["name"],
             scopes=document["scopes"],
+            integration=document.get("integration", "api"),
             status=document["status"],
             grant_expires_at=document["grantExpiresAt"],
             created_at=document["createdAt"],
+            last_used_at=document.get("lastUsedAt"),
         )
+
+    def _required_agent_connection(self, household_id: str, connection_id: str) -> dict:
+        document = self._items.get((household_id, connection_id))
+        if document is None or document.get("entityType") != "agentConnection":
+            raise ValueError("Agent connection not found")
+        return document
+
+    @staticmethod
+    def _timestamp(value: datetime) -> str:
+        return value.isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _window_start(value: str | None, now: datetime, seconds: int) -> datetime:
+        if value is not None:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if now < parsed + timedelta(seconds=seconds):
+                return parsed
+        return now
+
+    def _record_security_audit(
+        self,
+        household_id: str,
+        connection: dict,
+        *,
+        action: str,
+        reason: str,
+        marker: str,
+        count: int,
+    ) -> None:
+        operation_id = f"{action}:{connection['id']}:{marker}"
+        audit_id = f"audit:{hashlib.sha256(operation_id.encode()).hexdigest()}"
+        self._items[(household_id, audit_id)] = {
+            "id": audit_id,
+            "entityType": "auditEvent",
+            "householdId": household_id,
+            "actor": {"type": "agent", "id": connection["id"]},
+            "scope": "authentication",
+            "action": action,
+            "source": connection.get("integration", "api"),
+            "targetId": connection["id"],
+            "operationId": operation_id,
+            "outcome": "rejected",
+            "reason": reason,
+            "changeSummary": {"attemptCount": count},
+            "createdAt": connection["updatedAt"],
+        }
 
     @staticmethod
     def _as_sync_change(document: dict) -> SyncChange:
@@ -800,10 +993,23 @@ class InMemoryHouseholdStorage:
         actor: Actor,
     ) -> LedgerCreateResult:
         household_id = str(request.household_id)
-        operation_item_id = f"operation:{request.operation_id}"
+        operation_item_id = f"operation:{request.idempotency_key}"
+        request_hash = canonical_write_hash(
+            actor=actor,
+            scope="ledger:create",
+            action="ledger.create",
+            source=request.source,
+            entity_type="ledgerEntry",
+            entity_id=str(request.id),
+            payload=request.model_dump(by_alias=True, mode="json"),
+        )
         with self._lock:
             existing_operation = self._items.get((household_id, operation_item_id))
             if existing_operation is not None:
+                if existing_operation.get("requestHash") != request_hash:
+                    raise ValueError(
+                        "Idempotency key was already used for a different write"
+                    )
                 entry_data = self._items[
                     (household_id, existing_operation["resultEntityId"])
                 ]

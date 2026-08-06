@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import time
 import uuid
@@ -19,7 +20,7 @@ from app.dependencies import (
 )
 from app.models import (
     AgentAccessToken,
-    AgentAssetSnapshotCreate,
+    AgentAssetUpdate,
     AgentConnectionCreate,
     AgentConnectionCreated,
     AgentConnectionView,
@@ -45,10 +46,17 @@ from app.services import (
     WorkspaceNotActiveError,
 )
 from app.services.cloud import MembershipRequiredError
+from app.mcp_server import mcp_asgi_app
 
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+@asynccontextmanager
+async def application_lifespan(_: FastAPI):
+    async with mcp_asgi_app.router.lifespan_context(mcp_asgi_app):
+        yield
 
 fastapi_app = FastAPI(
     title="Anke Money Cloud API",
@@ -57,6 +65,7 @@ fastapi_app = FastAPI(
     docs_url="/docs" if settings.docs_enabled else None,
     redoc_url="/redoc" if settings.docs_enabled else None,
     openapi_url="/openapi.json",
+    lifespan=application_lifespan,
 )
 
 
@@ -197,6 +206,44 @@ async def revoke_agent_connection(
 
 
 @fastapi_app.post(
+    "/api/v1/agent-connections/{connection_id}/pause",
+    tags=["agent authorization"],
+    response_model=AgentConnectionView,
+    summary="Pause an agent connection without changing its grant",
+)
+async def pause_agent_connection(
+    connection_id: UUID,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> AgentConnectionView:
+    try:
+        return service.pause_agent_connection(identity, connection_id)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@fastapi_app.post(
+    "/api/v1/agent-connections/{connection_id}/resume",
+    tags=["agent authorization"],
+    response_model=AgentConnectionView,
+    summary="Resume the same unexpired agent grant",
+)
+async def resume_agent_connection(
+    connection_id: UUID,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> AgentConnectionView:
+    try:
+        return service.resume_agent_connection(identity, connection_id)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@fastapi_app.post(
     "/agent/v1/token/refresh",
     tags=["agent authorization"],
     response_model=AgentAccessToken,
@@ -230,6 +277,8 @@ async def agent_create_ledger_entry(
         return service.agent_create_ledger_entry(principal, request)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @fastapi_app.get(
@@ -266,19 +315,20 @@ async def agent_list_assets(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
 
 
-@fastapi_app.post(
-    "/agent/v1/assets/snapshots",
+@fastapi_app.patch(
+    "/agent/v1/assets/{account_id}",
     tags=["agent"],
     response_model=AgentEntityCreateResponse,
-    summary="Append an idempotent asset snapshot with agent scope",
+    summary="Update one asset by appending an idempotent snapshot",
 )
-async def agent_create_asset_snapshot(
-    request: AgentAssetSnapshotCreate,
+async def agent_update_asset(
+    account_id: UUID,
+    request: AgentAssetUpdate,
     principal: AgentPrincipal = Depends(current_agent),
     service: CloudService = Depends(cloud_service),
 ) -> AgentEntityCreateResponse:
     try:
-        return service.agent_create_asset_snapshot(principal, request)
+        return service.agent_update_asset(principal, account_id, request)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
     except ValueError as exc:
@@ -286,18 +336,35 @@ async def agent_create_asset_snapshot(
 
 
 @fastapi_app.get(
-    "/agent/v1/reference-data",
+    "/agent/v1/categories",
     tags=["agent"],
     response_model=AgentEntityListResponse,
-    summary="Read payment channels and categories with agent scope",
+    summary="Read categories with agent scope",
 )
-async def agent_list_reference_data(
+async def agent_list_categories(
     limit: int = Query(default=200, ge=1, le=500),
     principal: AgentPrincipal = Depends(current_agent),
     service: CloudService = Depends(cloud_service),
 ) -> AgentEntityListResponse:
     try:
-        return service.agent_list_reference_data(principal, limit)
+        return service.agent_list_categories(principal, limit)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+
+
+@fastapi_app.get(
+    "/agent/v1/channels",
+    tags=["agent"],
+    response_model=AgentEntityListResponse,
+    summary="Read payment channels with agent scope",
+)
+async def agent_list_channels(
+    limit: int = Query(default=200, ge=1, le=500),
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentEntityListResponse:
+    try:
+        return service.agent_list_channels(principal, limit)
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
 
@@ -395,3 +462,7 @@ async def activate_migration(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+# Keep the protocol endpoint outside OpenAPI while sharing this process and service layer.
+fastapi_app.mount("", mcp_asgi_app, name="anke-money-mcp")

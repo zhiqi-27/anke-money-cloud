@@ -17,7 +17,8 @@ from app.models import (
 def make_request(**overrides) -> LedgerEntryCreate:
     values = {
         "id": uuid4(),
-        "operation_id": uuid4(),
+        "idempotency_key": uuid4(),
+        "source": "api",
         "household_id": uuid4(),
         "kind": EntryKind.monthly_summary,
         "direction": LedgerDirection.expense,
@@ -48,18 +49,20 @@ class LedgerDocumentModelTest(unittest.TestCase):
             audit.as_cosmos_document(),
         ]
         self.assertEqual({item["householdId"] for item in documents}, {str(request.household_id)})
-        self.assertEqual(operation.id, f"operation:{request.operation_id}")
-        self.assertEqual(audit.id, f"audit:{request.operation_id}")
-        self.assertEqual(audit.scope, "ledger.entry.create")
+        self.assertEqual(operation.id, f"operation:{request.idempotency_key}")
+        self.assertEqual(audit.id, f"audit:{request.idempotency_key}")
+        self.assertEqual(audit.scope, "ledger:create")
+        self.assertEqual(audit.source, "api")
         self.assertTrue(
             all(
-                item["lastAcceptedMutationId"] == str(request.operation_id)
+                item["lastAcceptedMutationId"] == str(request.idempotency_key)
                 for item in documents
             )
         )
         self.assertEqual(entry.amount_in_fen, 12345)
-        self.assertNotIn("amountInFen", audit.change_summary)
+        self.assertEqual(audit.change_summary["after"]["amountInFen"], 12345)
         self.assertNotIn("note", audit.change_summary)
+        self.assertNotIn("note", str(audit.change_summary))
 
     def test_income_rejects_payment_channel(self):
         with self.assertRaises(ValidationError):

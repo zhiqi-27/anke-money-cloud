@@ -9,7 +9,7 @@ from app.auth import AuthenticatedIdentity
 from app.models import (
     Actor,
     ActorType,
-    AgentAssetSnapshotCreate,
+    AgentAssetUpdate,
     AgentConnectionCreate,
     AgentLedgerEntryCreate,
     AgentScope,
@@ -59,14 +59,14 @@ class AgentAccessTest(unittest.TestCase):
             self.identity,
             AgentConnectionCreate(
                 name="Synthetic bookkeeping agent",
-                scopes=[AgentScope.ledger_entry_create],
+                scopes=[AgentScope.ledger_create],
             ),
             self.access,
         )
         principal = self.access.authenticate(connection.access_token)
         request = AgentLedgerEntryCreate(
             id=uuid4(),
-            operation_id=uuid4(),
+            idempotency_key=uuid4(),
             kind="transaction",
             direction="expense",
             occurred_at=datetime(2026, 8, 5, tzinfo=UTC),
@@ -92,6 +92,10 @@ class AgentAccessTest(unittest.TestCase):
         audit = self.cloud.audit(self.identity, None, 20)
         self.assertTrue(any(event.actor_type == "agent" for event in audit.events))
 
+        conflicting_reuse = request.model_copy(update={"amount_in_fen": 9_900})
+        with self.assertRaises(ValueError):
+            self.cloud.agent_create_ledger_entry(principal, conflicting_reuse)
+
     def test_offline_device_write_and_agent_write_merge_without_loss_after_reconnect(self):
         second_device = self.cloud.bootstrap(
             self.identity,
@@ -105,7 +109,7 @@ class AgentAccessTest(unittest.TestCase):
             self.identity,
             AgentConnectionCreate(
                 name="Synthetic bookkeeping agent",
-                scopes=[AgentScope.ledger_entry_create],
+                scopes=[AgentScope.ledger_create],
             ),
             self.access,
         )
@@ -115,7 +119,7 @@ class AgentAccessTest(unittest.TestCase):
             principal,
             AgentLedgerEntryCreate(
                 id=remote_id,
-                operation_id=uuid4(),
+                idempotency_key=uuid4(),
                 kind="transaction",
                 direction="expense",
                 occurred_at=datetime(2026, 8, 5, 2, tzinfo=UTC),
@@ -228,7 +232,8 @@ class AgentAccessTest(unittest.TestCase):
         )
         principal = self.access.authenticate(connection.access_token)
         request = AgentLedgerEntryCreate(
-            id=uuid4(), operation_id=uuid4(), kind="transaction", direction="income",
+            id=uuid4(), idempotency_key=uuid4(),
+            kind="transaction", direction="income",
             occurred_at=datetime.now(UTC), month_start=date(2026, 8, 1),
             category_id="salary", amount_in_fen=100,
         )
@@ -237,7 +242,7 @@ class AgentAccessTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             AgentConnectionCreate(
                 name="Too long",
-                scopes=[AgentScope.ledger_entry_create],
+                scopes=[AgentScope.ledger_create],
                 grant_duration_seconds=24 * 60 * 60 + 1,
             )
 
@@ -256,29 +261,42 @@ class AgentAccessTest(unittest.TestCase):
         account_id = uuid4()
         self.storage.create_agent_entity(
             str(principal.household_id), actor, "assetAccount", str(account_id),
-            str(uuid4()), "test.seed", "test.seed", {"name": "Home", "amountInFen": 1_000}, now,
+            str(uuid4()), "test.seed", "test.seed", "api",
+            {"name": "Home", "amountInFen": 1_000},
+            {"before": None, "after": {"revision": 1}}, now,
         )
         self.storage.create_agent_entity(
             str(principal.household_id), actor, "paymentChannel", "cash",
-            str(uuid4()), "test.seed", "test.seed", {"name": "Cash", "sortOrder": 0}, now,
+            str(uuid4()), "test.seed", "test.seed", "api",
+            {"name": "Cash", "sortOrder": 0},
+            {"before": None, "after": {"revision": 1}}, now,
         )
-        snapshot = AgentAssetSnapshotCreate(
-            id=uuid4(),
-            operation_id=uuid4(),
-            account_id=account_id,
+        self.storage.create_agent_entity(
+            str(principal.household_id), actor, "category", "grocery",
+            str(uuid4()), "test.seed", "test.seed", "api",
+            {"name": "Grocery", "sortOrder": 0},
+            {"before": None, "after": {"revision": 1}}, now,
+        )
+        snapshot = AgentAssetUpdate(
+            snapshot_id=uuid4(),
+            idempotency_key=uuid4(),
             amount_in_fen=1_200,
             observed_at=now,
         )
 
-        first = self.cloud.agent_create_asset_snapshot(principal, snapshot)
-        replay = self.cloud.agent_create_asset_snapshot(principal, snapshot)
+        first = self.cloud.agent_update_asset(principal, account_id, snapshot)
+        replay = self.cloud.agent_update_asset(principal, account_id, snapshot)
+        conflicting_reuse = snapshot.model_copy(update={"amount_in_fen": 1_300})
+        with self.assertRaises(ValueError):
+            self.cloud.agent_update_asset(principal, account_id, conflicting_reuse)
 
         self.assertFalse(first.replayed)
         self.assertTrue(replay.replayed)
         self.assertEqual(first.item.payload["amountInFen"], 1_200)
         self.assertTrue(self.cloud.agent_list_assets(principal, 20).items)
         self.cloud.agent_list_ledger_entries(principal, 20)
-        self.assertTrue(self.cloud.agent_list_reference_data(principal, 20).items)
+        self.assertTrue(self.cloud.agent_list_categories(principal, 20).items)
+        self.assertTrue(self.cloud.agent_list_channels(principal, 20).items)
 
         read_only = self.cloud.create_agent_connection(
             self.identity,
@@ -289,13 +307,13 @@ class AgentAccessTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.cloud.agent_list_assets(read_principal, 20)
         with self.assertRaises(PermissionError):
-            self.cloud.agent_create_asset_snapshot(read_principal, snapshot)
+            self.cloud.agent_update_asset(read_principal, account_id, snapshot)
 
         audit = self.cloud.audit(self.identity, None, 100)
         denied = [event for event in audit.events if event.reason == "insufficientScope"]
         self.assertEqual({event.scope for event in denied}, {
             AgentScope.assets_read.value,
-            AgentScope.assets_snapshot_create.value,
+            AgentScope.assets_update.value,
         })
 
 

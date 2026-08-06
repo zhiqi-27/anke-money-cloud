@@ -12,8 +12,13 @@ from app.auth import (
     TokenVerifier,
 )
 from app.config import ConfigurationError, get_settings
-from app.services import AgentAccessService, CloudService, InvalidAgentTokenError
-from app.models import AgentPrincipal
+from app.services import (
+    AgentAccessService,
+    AgentRateLimitExceededError,
+    CloudService,
+    InvalidAgentTokenError,
+)
+from app.models import AgentPrincipal, OperationSource
 from app.storage.cosmos import CosmosHouseholdStorage
 
 
@@ -53,7 +58,12 @@ def cloud_service() -> CloudService:
 
 
 def agent_access_service() -> AgentAccessService:
-    return AgentAccessService(get_household_storage())
+    settings = get_settings()
+    return AgentAccessService(
+        get_household_storage(),
+        requests_per_minute=settings.agent_requests_per_minute,
+        failed_auth_threshold=settings.agent_failed_auth_threshold,
+    )
 
 
 def current_agent(
@@ -67,7 +77,16 @@ def current_agent(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return access.authenticate(credentials.credentials)
+        principal = access.authenticate(credentials.credentials)
+        if principal.integration is not OperationSource.api:
+            raise InvalidAgentTokenError("Agent connection belongs to another integration")
+        return principal
+    except AgentRateLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Agent request rate limit exceeded",
+            headers={"Retry-After": "60"},
+        ) from exc
     except InvalidAgentTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

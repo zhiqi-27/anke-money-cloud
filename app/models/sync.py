@@ -229,13 +229,18 @@ class SyncPullResponse(APIModel):
 
 class AuditEventView(APIModel):
     operation_id: str
+    idempotency_key: str
     actor_type: str
     actor_id: str
     scope: str
     action: str
+    source: str
     target_id: str
     outcome: str
     reason: str | None = None
+    prior_revision: int | None = None
+    new_revision: int | None = None
+    change_summary: dict[str, Any]
     created_at: datetime
 
 

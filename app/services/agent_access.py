@@ -21,9 +21,21 @@ class InvalidAgentTokenError(RuntimeError):
     pass
 
 
+class AgentRateLimitExceededError(RuntimeError):
+    pass
+
+
 class AgentAccessService:
-    def __init__(self, storage: HouseholdStorage):
+    def __init__(
+        self,
+        storage: HouseholdStorage,
+        *,
+        requests_per_minute: int = 120,
+        failed_auth_threshold: int = 5,
+    ):
         self._storage = storage
+        self._requests_per_minute = requests_per_minute
+        self._failed_auth_threshold = failed_auth_threshold
 
     def create_connection(
         self,
@@ -74,6 +86,8 @@ class AgentAccessService:
                 str(connection_id),
                 "revokedExpiredOrInvalidRefresh",
                 now,
+                self._failed_auth_threshold,
+                5 * 60,
             )
             raise InvalidAgentTokenError("Invalid or expired agent refresh token")
         _, token_expires_at = refreshed
@@ -88,20 +102,31 @@ class AgentAccessService:
             connection_id = str(UUID(parts[1]))
         except ValueError as exc:
             raise InvalidAgentTokenError("Malformed agent token") from exc
+        now = datetime.now(UTC)
         principal = self._storage.authenticate_agent_token(
             household_id,
             connection_id,
             self.hash_token(token),
-            datetime.now(UTC),
+            now,
         )
         if principal is None:
             self._storage.record_agent_auth_failure(
                 household_id,
                 connection_id,
                 "revokedExpiredOrInvalid",
-                datetime.now(UTC),
+                now,
+                self._failed_auth_threshold,
+                5 * 60,
             )
             raise InvalidAgentTokenError("Invalid or expired agent token")
+        if not self._storage.consume_agent_request(
+            household_id,
+            connection_id,
+            now,
+            self._requests_per_minute,
+            60,
+        ):
+            raise AgentRateLimitExceededError("Agent request rate limit exceeded")
         return principal
 
     @staticmethod

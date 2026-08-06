@@ -63,14 +63,16 @@ Azure Functions locally. Do not populate or commit the example.
   connection and its outstanding token
 - `POST /agent/v1/token/refresh` — rotates the short-lived access token while
   the parent grant remains active
-- `GET /agent/v1/ledger/entries` — reads ledger entries with `ledger.read`
+- `GET /agent/v1/ledger/entries` — reads ledger entries with `ledger:read`
 - `POST /agent/v1/ledger/entries` — accepts an idempotent, scoped remote Agent
-  ledger write that is published to the app's incremental change stream
-- `GET /agent/v1/assets` — reads asset accounts and snapshots with `assets.read`
-- `POST /agent/v1/assets/snapshots` — appends an idempotent snapshot with
-  `assets.snapshot.create`
-- `GET /agent/v1/reference-data` — reads channels and categories with
-  `reference-data.read`
+  ledger write with `ledger:create` and publishes it to the incremental stream
+- `GET /agent/v1/assets` — reads asset accounts and snapshots with `assets:read`
+- `PATCH /agent/v1/assets/{account_id}` — updates one asset by appending an
+  idempotent dated snapshot with `assets:update`
+- `GET /agent/v1/categories` — reads categories with `categories:read`
+- `GET /agent/v1/channels` — reads payment channels with `channels:read`
+- `POST /mcp` — Remote MCP Streamable HTTP endpoint exposing the same six
+  capabilities through the shared application service
 
 The household is always resolved from the verified Firebase UID. Sync and
 migration payloads cannot choose a household or actor. A registered device uses
@@ -85,9 +87,20 @@ hashed refresh credential can rotate access tokens only until the parent grant
 expires. Rejected
 authentication attempts for a known connection are
 recorded in the owner-visible audit stream. Remote Agent entries use their own
-operation ID, so a retry cannot duplicate a ledger entry while the app is offline.
-The same rule applies to remote asset snapshots. Read, ledger-create, and
-asset-snapshot-create scopes are checked independently on every request.
+idempotency key, so a retry cannot duplicate a ledger entry while the app is
+offline. Reusing a key with different content is rejected. The same rule applies
+to remote asset updates. Every Agent write atomically stores the connection actor,
+exact scope, source (`api`, `mcp`, or `skill`), idempotency claim, redacted
+before/after difference, and owner-visible audit event.
+Source is selected once when the connection is created and is enforced by the
+server; callers cannot relabel a write or use the credential on another transport.
+An owner can pause, resume, or irrevocably revoke a connection without changing
+its scopes or expiry. Each connection is limited to 120 authenticated requests
+per rolling fixed 60-second window by default. Repeated invalid tokens for a
+known connection produce a deduplicated owner-visible anomaly event; they do not
+silently widen access or permanently lock the valid credential.
+See [Skill installation](docs/skill-installation.md) for the user-side connection
+flow and credential boundary.
 
 The app imports without Firebase credentials or a Cosmos connection. External
 clients initialize lazily only when an authenticated or explicit storage operation
@@ -113,6 +126,10 @@ requires them.
 | `ANKE_COSMOS_KEY` | local fallback | Ignored local account key; prefer managed identity in Azure |
 | `ANKE_COSMOS_EXPECTED_ACCOUNT_NAME` | smoke | Exact Development account name guard |
 | `ANKE_COSMOS_ALLOW_SMOKE_WRITE` | smoke | Explicit `true` opt-in |
+| `ANKE_AGENT_REQUESTS_PER_MINUTE` | Agent security | Per-connection authenticated request limit in each 60-second window; default `120` |
+| `ANKE_AGENT_FAILED_AUTH_THRESHOLD` | Agent security | Known-connection invalid-token attempts in five minutes before one anomaly event; default `5` |
+| `ANKE_MCP_ALLOWED_HOSTS` | MCP | Comma-separated exact host patterns accepted by DNS-rebinding protection; deployed host must be listed |
+| `ANKE_MCP_ALLOWED_ORIGINS` | browser MCP | Optional comma-separated trusted browser origins; empty for non-browser clients |
 
 ## Azure Functions local host
 

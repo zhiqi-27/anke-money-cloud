@@ -19,6 +19,24 @@ def _boolean(name: str, default: bool) -> bool:
     return value.strip().lower() in TRUE_VALUES
 
 
+def _csv(name: str, default: str) -> tuple[str, ...]:
+    value = os.getenv(name, default)
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _integer(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise ConfigurationError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     environment: str
@@ -31,6 +49,14 @@ class Settings:
     cosmos_key: str
     cosmos_expected_account_name: str
     cosmos_allow_smoke_write: bool
+    agent_requests_per_minute: int = 120
+    agent_failed_auth_threshold: int = 5
+    mcp_allowed_hosts: tuple[str, ...] = (
+        "testserver",
+        "localhost:*",
+        "127.0.0.1:*",
+    )
+    mcp_allowed_origins: tuple[str, ...] = ()
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -61,6 +87,17 @@ class Settings:
             cosmos_allow_smoke_write=_boolean(
                 "ANKE_COSMOS_ALLOW_SMOKE_WRITE", default=False
             ),
+            agent_requests_per_minute=_integer(
+                "ANKE_AGENT_REQUESTS_PER_MINUTE", 120, minimum=10, maximum=10_000
+            ),
+            agent_failed_auth_threshold=_integer(
+                "ANKE_AGENT_FAILED_AUTH_THRESHOLD", 5, minimum=3, maximum=100
+            ),
+            mcp_allowed_hosts=_csv(
+                "ANKE_MCP_ALLOWED_HOSTS",
+                "testserver,localhost:*,127.0.0.1:*",
+            ),
+            mcp_allowed_origins=_csv("ANKE_MCP_ALLOWED_ORIGINS", ""),
         )
 
     @property

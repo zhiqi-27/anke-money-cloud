@@ -81,11 +81,14 @@ class ApiContractTest(unittest.TestCase):
         self.assertIn("/api/v1/migrations", paths)
         self.assertIn("/api/v1/audit", paths)
         self.assertIn("/api/v1/agent-connections", paths)
+        self.assertIn("/api/v1/agent-connections/{connection_id}/pause", paths)
+        self.assertIn("/api/v1/agent-connections/{connection_id}/resume", paths)
         self.assertIn("/agent/v1/token/refresh", paths)
         self.assertIn("/agent/v1/ledger/entries", paths)
         self.assertIn("/agent/v1/assets", paths)
-        self.assertIn("/agent/v1/assets/snapshots", paths)
-        self.assertIn("/agent/v1/reference-data", paths)
+        self.assertIn("/agent/v1/assets/{account_id}", paths)
+        self.assertIn("/agent/v1/categories", paths)
+        self.assertIn("/agent/v1/channels", paths)
         identity_operation = paths["/api/v1/me"]["get"]
         self.assertEqual(identity_operation["security"], [{"HTTPBearer": []}])
         self.assertEqual(
@@ -108,8 +111,9 @@ class ApiContractTest(unittest.TestCase):
             "/agent/v1/token/refresh": {"post"},
             "/agent/v1/ledger/entries": {"get", "post"},
             "/agent/v1/assets": {"get"},
-            "/agent/v1/assets/snapshots": {"post"},
-            "/agent/v1/reference-data": {"get"},
+            "/agent/v1/assets/{account_id}": {"patch"},
+            "/agent/v1/categories": {"get"},
+            "/agent/v1/channels": {"get"},
         })
         self.assertFalse(any(
             fragment in path
@@ -257,7 +261,7 @@ class ApiContractTest(unittest.TestCase):
             connection = self.client.post(
                 "/api/v1/agent-connections",
                 headers=headers,
-                json={"name": "Blocked agent", "scopes": ["ledger.read"]},
+                json={"name": "Blocked agent", "scopes": ["ledger:read"]},
             )
 
         self.assertEqual(sync.status_code, 409)
@@ -281,7 +285,7 @@ class ApiContractTest(unittest.TestCase):
             connection = self.client.post(
                 "/api/v1/agent-connections",
                 headers=owner_headers,
-                json={"name": "Synthetic agent", "scopes": ["ledger.entry.create"]},
+                json={"name": "Synthetic agent", "scopes": ["ledger:create"]},
             )
         self.assertEqual(bootstrap.status_code, 200)
         self.assertEqual(connection.status_code, 200)
@@ -298,7 +302,8 @@ class ApiContractTest(unittest.TestCase):
             headers={"Authorization": f"Bearer {agent_token}"},
             json={
                 "id": "33333333-3333-3333-3333-333333333333",
-                "operationId": "44444444-4444-4444-4444-444444444444",
+                "idempotencyKey": "44444444-4444-4444-4444-444444444444",
+                "source": "skill",
                 "kind": "transaction",
                 "direction": "expense",
                 "occurredAt": "2026-08-05T00:00:00Z",
@@ -313,7 +318,8 @@ class ApiContractTest(unittest.TestCase):
             headers={"Authorization": f"Bearer {agent_token}"},
             json={
                 "id": "33333333-3333-3333-3333-333333333333",
-                "operationId": "44444444-4444-4444-4444-444444444444",
+                "idempotencyKey": "44444444-4444-4444-4444-444444444444",
+                "source": "skill",
                 "kind": "transaction",
                 "direction": "expense",
                 "occurredAt": "2026-08-05T00:00:00Z",
@@ -354,6 +360,7 @@ class ApiContractTest(unittest.TestCase):
                 headers=owner_headers,
             )
         self.assertEqual(agent_write.status_code, 200)
+        self.assertEqual(connection.json()["integration"], "api")
         self.assertFalse(agent_write.json()["replayed"])
         self.assertTrue(replay.json()["replayed"])
         self.assertEqual(owner_push.status_code, 200)
@@ -364,6 +371,13 @@ class ApiContractTest(unittest.TestCase):
                 "cccccccc-cccc-cccc-cccc-cccccccccccc",
             },
         )
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            audit = self.client.get("/api/v1/audit?limit=100", headers=owner_headers)
+        agent_event = next(
+            event for event in audit.json()["events"]
+            if event["targetId"] == "33333333-3333-3333-3333-333333333333"
+        )
+        self.assertEqual(agent_event["source"], "api")
 
     def test_all_initial_agent_scopes_have_separate_enforced_routes(self):
         storage = InMemoryHouseholdStorage()
@@ -410,40 +424,57 @@ class ApiContractTest(unittest.TestCase):
                             "isSystem": False,
                         },
                     },
+                    {
+                        "mutationId": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                        "deviceId": device_id,
+                        "sequence": 3,
+                        "entityType": "category",
+                        "entityId": "grocery",
+                        "action": "create",
+                        "occurredAt": "2026-08-05T00:00:00Z",
+                        "payload": {
+                            "name": "Grocery",
+                            "symbolName": "cart",
+                            "sortOrder": 0,
+                            "isArchived": False,
+                            "isSystem": False,
+                            "direction": "expense",
+                        },
+                    },
                 ]},
             )
             connection = self.client.post(
                 "/api/v1/agent-connections",
                 headers=owner_headers,
                 json={"name": "Full agent", "scopes": [
-                    "ledger.read", "ledger.entry.create", "assets.read",
-                    "assets.snapshot.create", "reference-data.read",
+                    "ledger:read", "ledger:create", "assets:read",
+                    "assets:update", "categories:read", "channels:read",
                 ]},
             )
             restricted = self.client.post(
                 "/api/v1/agent-connections",
                 headers=owner_headers,
-                json={"name": "Ledger only", "scopes": ["ledger.read"]},
+                json={"name": "Ledger only", "scopes": ["ledger:read"]},
             )
         self.assertEqual(seeded.status_code, 200)
         token = connection.json()["accessToken"]
         agent_headers = {"Authorization": f"Bearer {token}"}
 
         assets = self.client.get("/agent/v1/assets", headers=agent_headers)
-        references = self.client.get("/agent/v1/reference-data", headers=agent_headers)
+        categories = self.client.get("/agent/v1/categories", headers=agent_headers)
+        channels = self.client.get("/agent/v1/channels", headers=agent_headers)
         ledger = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
         snapshot_body = {
-            "id": "99999999-9999-9999-9999-999999999999",
-            "operationId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "accountId": account_id,
+            "snapshotId": "99999999-9999-9999-9999-999999999999",
+            "idempotencyKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
             "amountInFen": 1200,
             "observedAt": "2026-08-05T01:00:00Z",
         }
-        snapshot = self.client.post(
-            "/agent/v1/assets/snapshots", headers=agent_headers, json=snapshot_body
+        snapshot = self.client.patch(
+            f"/agent/v1/assets/{account_id}", headers=agent_headers, json=snapshot_body
         )
-        snapshot_replay = self.client.post(
-            "/agent/v1/assets/snapshots", headers=agent_headers, json=snapshot_body
+        snapshot_replay = self.client.patch(
+            f"/agent/v1/assets/{account_id}", headers=agent_headers, json=snapshot_body
         )
         denied = self.client.get(
             "/agent/v1/assets",
@@ -454,15 +485,81 @@ class ApiContractTest(unittest.TestCase):
 
         self.assertEqual(assets.status_code, 200)
         self.assertEqual(assets.json()["items"][0]["entityType"], "assetAccount")
-        self.assertEqual(references.status_code, 200)
-        self.assertEqual(references.json()["items"][0]["entityType"], "paymentChannel")
+        self.assertEqual(categories.status_code, 200)
+        self.assertEqual(categories.json()["items"][0]["entityType"], "category")
+        self.assertEqual(channels.status_code, 200)
+        self.assertEqual(channels.json()["items"][0]["entityType"], "paymentChannel")
         self.assertEqual(ledger.status_code, 200)
         self.assertEqual(snapshot.status_code, 200)
         self.assertFalse(snapshot.json()["replayed"])
         self.assertTrue(snapshot_replay.json()["replayed"])
         self.assertEqual(denied.status_code, 403)
         self.assertIn("insufficientScope", audit.text)
-        self.assertNotIn("amountInFen", audit.text)
+        self.assertIn('"source":"api"', audit.text)
+        self.assertIn('"idempotencyKey":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"', audit.text)
+        self.assertIn('"amountInFen":1000', audit.text)
+        self.assertIn('"amountInFen":1200', audit.text)
+        self.assertNotIn("must not enter audit", audit.text)
+
+    def test_owner_pause_resume_last_use_and_agent_rate_limit_contract(self):
+        storage = InMemoryHouseholdStorage()
+        service = CloudService(storage)
+        access = AgentAccessService(storage, requests_per_minute=2)
+        fastapi_app.dependency_overrides[cloud_service] = lambda: service
+        fastapi_app.dependency_overrides[agent_access_service] = lambda: access
+        owner_headers = {"Authorization": "Bearer valid-test-token"}
+        device_id = "abababab-abab-abab-abab-abababababab"
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            self.client.post(
+                "/api/v1/bootstrap",
+                headers=owner_headers,
+                json={
+                    "deviceId": device_id,
+                    "name": "iPhone",
+                    "platform": "ios",
+                    "appVersion": "0.1.0",
+                },
+            )
+            self.activate_empty_workspace(storage, device_id)
+            created = self.client.post(
+                "/api/v1/agent-connections",
+                headers=owner_headers,
+                json={"name": "Rate client", "scopes": ["ledger:read"]},
+            )
+            connection_id = created.json()["connectionId"]
+            token = created.json()["accessToken"]
+            agent_headers = {"Authorization": f"Bearer {token}"}
+            paused = self.client.post(
+                f"/api/v1/agent-connections/{connection_id}/pause",
+                headers=owner_headers,
+            )
+            paused_request = self.client.get(
+                "/agent/v1/ledger/entries", headers=agent_headers
+            )
+            resumed = self.client.post(
+                f"/api/v1/agent-connections/{connection_id}/resume",
+                headers=owner_headers,
+            )
+            first = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
+            second = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
+            limited = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
+            connections = self.client.get(
+                "/api/v1/agent-connections", headers=owner_headers
+            )
+            audit = self.client.get("/api/v1/audit?limit=100", headers=owner_headers)
+
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(paused.json()["status"], "paused")
+        self.assertEqual(paused_request.status_code, 401)
+        self.assertEqual(resumed.json()["status"], "active")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(limited.status_code, 429)
+        self.assertEqual(limited.headers["retry-after"], "60")
+        self.assertIsNotNone(connections.json()[0]["lastUsedAt"])
+        self.assertIn('"action":"agent.pause"', audit.text)
+        self.assertIn('"action":"agent.resume"', audit.text)
+        self.assertIn('"action":"agent.rate_limit"', audit.text)
 
 
 if __name__ == "__main__":

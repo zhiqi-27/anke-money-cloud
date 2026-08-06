@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, timedelta
 import unittest
 from uuid import uuid4
 
-from azure.cosmos.exceptions import CosmosResourceNotFoundError
+from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
 
 from app.config import ConfigurationError, Settings
 from app.models import (
@@ -20,7 +20,12 @@ from app.models import (
     SyncMutation,
 )
 from app.auth import AuthenticatedIdentity
-from app.services import AgentAccessService, CloudService
+from app.services import (
+    AgentAccessService,
+    AgentRateLimitExceededError,
+    CloudService,
+    InvalidAgentTokenError,
+)
 from app.storage.cosmos import CosmosHouseholdStorage
 from app.storage.in_memory import InMemoryHouseholdStorage
 
@@ -28,7 +33,8 @@ from app.storage.in_memory import InMemoryHouseholdStorage
 def make_request() -> LedgerEntryCreate:
     return LedgerEntryCreate(
         id=uuid4(),
-        operation_id=uuid4(),
+        idempotency_key=uuid4(),
+        source="api",
         household_id=uuid4(),
         kind=EntryKind.transaction,
         direction=LedgerDirection.expense,
@@ -137,6 +143,28 @@ class FakeCosmosContainer:
         return documents
 
 
+class PreconditionRetryCosmosContainer(FakeCosmosContainer):
+    def __init__(self):
+        super().__init__()
+        self.fail_next_batch = False
+        self.precondition_attempts = 0
+
+    def execute_item_batch(self, *, batch_operations, partition_key):
+        if self.fail_next_batch:
+            self.fail_next_batch = False
+            self.precondition_attempts += 1
+            raise CosmosBatchOperationError(
+                headers={},
+                status_code=412,
+                message="synthetic stale ETag",
+                operation_responses=[],
+            )
+        return super().execute_item_batch(
+            batch_operations=batch_operations,
+            partition_key=partition_key,
+        )
+
+
 class FakeIdentityContainer:
     def __init__(self):
         self.items = {}
@@ -176,7 +204,7 @@ class InMemoryHouseholdStorageTest(unittest.TestCase):
         actor = Actor(type=ActorType.user, id="firebase-user-1")
         first = make_request()
         second = first.model_copy(
-            update={"id": uuid4(), "operation_id": uuid4()}
+            update={"id": uuid4(), "idempotency_key": uuid4()}
         )
 
         storage.create_ledger_entry(first, actor)
@@ -409,6 +437,96 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         operations, _ = entities.batch_calls[-1]
         self.assertEqual([item[0] for item in operations], ["replace", "create"])
 
+    def test_cosmos_agent_lifecycle_rate_limit_and_anomaly_use_household_batches(self):
+        entities = FakeCosmosContainer()
+        identities = FakeIdentityContainer()
+        storage = CosmosHouseholdStorage(
+            settings(), container=entities, identities_container=identities
+        )
+        cloud = CloudService(storage)
+        access = AgentAccessService(
+            storage, requests_per_minute=1, failed_auth_threshold=3
+        )
+        identity = AuthenticatedIdentity(uid="firebase-security-owner")
+        bootstrap = cloud.bootstrap(
+            identity,
+            DeviceRegistration(
+                device_id=uuid4(), name="Synthetic iPhone", app_version="0.1.0"
+            ),
+        )
+        household_id = str(bootstrap.household_id)
+        entities.items[(household_id, household_id)]["status"] = "active"
+        created = cloud.create_agent_connection(
+            identity,
+            AgentConnectionCreate(name="Cosmos client", scopes=[AgentScope.ledger_read]),
+            access,
+        )
+
+        paused = cloud.pause_agent_connection(identity, created.connection_id)
+        resumed = cloud.resume_agent_connection(identity, created.connection_id)
+        self.assertEqual(paused.status, "paused")
+        self.assertEqual(resumed.status, "active")
+        self.assertEqual(paused.scopes, resumed.scopes)
+        self.assertEqual(paused.grant_expires_at, resumed.grant_expires_at)
+
+        access.authenticate(created.access_token)
+        with self.assertRaises(AgentRateLimitExceededError):
+            access.authenticate(created.access_token)
+        forged = created.access_token.rsplit(".", 1)[0] + ".forged"
+        for _ in range(3):
+            with self.assertRaises(InvalidAgentTokenError):
+                access.authenticate(forged)
+
+        connection = storage.read_household_document(
+            household_id, str(created.connection_id)
+        )
+        self.assertIsNotNone(connection["lastUsedAt"])
+        audits = [
+            item for (partition, _), item in entities.items.items()
+            if partition == household_id and item.get("entityType") == "auditEvent"
+        ]
+        actions = {item["action"] for item in audits}
+        self.assertTrue({
+            "agent.pause",
+            "agent.resume",
+            "agent.rate_limit",
+            "agent.authentication.anomaly",
+        }.issubset(actions))
+        self.assertTrue(all(partition == household_id for _, partition in entities.batch_calls))
+
+    def test_cosmos_agent_counter_retries_a_stale_etag(self):
+        entities = PreconditionRetryCosmosContainer()
+        storage = CosmosHouseholdStorage(
+            settings(), container=entities, identities_container=FakeIdentityContainer()
+        )
+        cloud = CloudService(storage)
+        access = AgentAccessService(storage)
+        identity = AuthenticatedIdentity(uid="firebase-concurrent-owner")
+        bootstrap = cloud.bootstrap(
+            identity,
+            DeviceRegistration(
+                device_id=uuid4(), name="Synthetic iPhone", app_version="0.1.0"
+            ),
+        )
+        household_id = str(bootstrap.household_id)
+        entities.items[(household_id, household_id)]["status"] = "active"
+        created = cloud.create_agent_connection(
+            identity,
+            AgentConnectionCreate(name="Concurrent client", scopes=[AgentScope.ledger_read]),
+            access,
+        )
+
+        entities.fail_next_batch = True
+        principal = access.authenticate(created.access_token)
+
+        self.assertEqual(principal.connection_id, created.connection_id)
+        self.assertEqual(entities.precondition_attempts, 1)
+        connection = storage.read_household_document(
+            household_id, str(created.connection_id)
+        )
+        self.assertEqual(connection["requestWindowCount"], 1)
+        self.assertIsNotNone(connection["lastUsedAt"])
+
     def test_agent_entity_create_batches_entity_operation_and_redacted_audit(self):
         entities = FakeCosmosContainer()
         storage = CosmosHouseholdStorage(settings(), container=entities)
@@ -432,9 +550,14 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
             "assetSnapshot",
             entity_id,
             operation_id,
-            "assets.snapshot.create",
-            "assets.snapshot.create",
+            "assets:update",
+            "assets.update",
+            "api",
             {"amountInFen": 8_800, "note": "must not enter audit"},
+            {
+                "before": {"amountInFen": 8_000, "revision": 1},
+                "after": {"amountInFen": 8_800, "revision": 2},
+            },
             datetime.now(UTC),
         )
         second, replayed_again = storage.create_agent_entity(
@@ -443,9 +566,14 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
             "assetSnapshot",
             entity_id,
             operation_id,
-            "assets.snapshot.create",
-            "assets.snapshot.create",
+            "assets:update",
+            "assets.update",
+            "api",
             {"amountInFen": 8_800, "note": "must not enter audit"},
+            {
+                "before": {"amountInFen": 8_000, "revision": 1},
+                "after": {"amountInFen": 8_800, "revision": 2},
+            },
             datetime.now(UTC),
         )
 
@@ -456,7 +584,10 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         self.assertEqual(partition, household_id)
         self.assertEqual(len(batch), 4)
         audit = entities.items[(household_id, f"audit:{operation_id}")]
-        self.assertNotIn("amountInFen", str(audit))
+        self.assertEqual(audit["source"], "api")
+        self.assertEqual(audit["idempotencyKey"], operation_id)
+        self.assertEqual(audit["changeSummary"]["before"]["amountInFen"], 8_000)
+        self.assertEqual(audit["changeSummary"]["after"]["amountInFen"], 8_800)
         self.assertNotIn("must not enter audit", str(audit))
 
     def test_cosmos_retention_purges_old_tombstone_payload_and_deletes_old_audit(self):

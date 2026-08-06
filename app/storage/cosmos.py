@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from collections import Counter
 import hashlib
 import json
+import time
 from typing import Any
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -25,6 +26,7 @@ from app.models import (
     AgentConnectionView,
     AgentPrincipal,
     AgentScope,
+    OperationSource,
     AuditEventView,
     BootstrapResponse,
     DeviceRegistration,
@@ -40,6 +42,7 @@ from app.models import (
     SyncEntityType,
     SyncMutation,
     build_ledger_transaction_documents,
+    canonical_write_hash,
 )
 from app.storage.protocols import LedgerCreateResult, RetentionResult
 
@@ -208,6 +211,7 @@ class CosmosHouseholdStorage:
             "householdId": household_id,
             "name": request.name,
             "scopes": [scope.value for scope in request.scopes],
+            "integration": request.integration.value,
             "status": "active",
             "tokenHash": token_hash,
             "refreshTokenHash": refresh_token_hash,
@@ -256,6 +260,115 @@ class CosmosHouseholdStorage:
         )
         return self._connection_view(updated)
 
+    def pause_agent_connection(
+        self,
+        household_id: str,
+        actor: Actor,
+        connection_id: str,
+        now: datetime,
+    ) -> AgentConnectionView:
+        document = self._required_agent_connection(household_id, connection_id)
+        if document["status"] == "revoked":
+            raise ValueError("Revoked agent connection cannot be paused")
+        if document["status"] == "paused":
+            return self._connection_view(document)
+        updated = dict(document)
+        updated["status"] = "paused"
+        updated["updatedAt"] = self._timestamp(now)
+        audit = self._authorization_audit(household_id, actor, updated, "agent.pause")
+        self._entities_container().execute_item_batch(
+            batch_operations=[
+                ("replace", (connection_id, updated), self._etag_kwargs(document)),
+                ("create", (audit,), {}),
+            ],
+            partition_key=household_id,
+        )
+        return self._connection_view(updated)
+
+    def resume_agent_connection(
+        self,
+        household_id: str,
+        actor: Actor,
+        connection_id: str,
+        now: datetime,
+    ) -> AgentConnectionView:
+        document = self._required_agent_connection(household_id, connection_id)
+        if document["status"] == "revoked":
+            raise ValueError("Revoked agent connection cannot be resumed")
+        if datetime.fromisoformat(
+            document["grantExpiresAt"].replace("Z", "+00:00")
+        ) <= now:
+            raise ValueError("Expired agent connection cannot be resumed")
+        if document["status"] == "active":
+            return self._connection_view(document)
+        updated = dict(document)
+        updated["status"] = "active"
+        updated["updatedAt"] = self._timestamp(now)
+        audit = self._authorization_audit(household_id, actor, updated, "agent.resume")
+        self._entities_container().execute_item_batch(
+            batch_operations=[
+                ("replace", (connection_id, updated), self._etag_kwargs(document)),
+                ("create", (audit,), {}),
+            ],
+            partition_key=household_id,
+        )
+        return self._connection_view(updated)
+
+    def consume_agent_request(
+        self,
+        household_id: str,
+        connection_id: str,
+        now: datetime,
+        limit: int,
+        window_seconds: int,
+    ) -> bool:
+        for attempt in range(32):
+            document = self._required_agent_connection(household_id, connection_id)
+            window_start = self._window_start(
+                document.get("requestWindowStartedAt"), now, window_seconds
+            )
+            window_text = self._timestamp(window_start)
+            count = (
+                int(document.get("requestWindowCount", 0))
+                if document.get("requestWindowStartedAt") == window_text
+                else 0
+            ) + 1
+            updated = dict(document)
+            updated["requestWindowStartedAt"] = window_text
+            updated["requestWindowCount"] = count
+            updated["updatedAt"] = self._timestamp(now)
+            audit = None
+            if count > limit:
+                if document.get("rateLimitAuditWindow") != window_text:
+                    updated["rateLimitAuditWindow"] = window_text
+                    audit = self._security_audit(
+                        household_id,
+                        updated,
+                        action="agent.rate_limit",
+                        reason="requestRateExceeded",
+                        marker=window_text,
+                        count=count,
+                    )
+            else:
+                updated["lastUsedAt"] = self._timestamp(now)
+            operations: list[tuple] = [
+                ("replace", (connection_id, updated), self._etag_kwargs(document))
+            ]
+            if audit is not None:
+                operations.append(("create", (audit,), {}))
+            try:
+                self._entities_container().execute_item_batch(
+                    batch_operations=operations,
+                    partition_key=household_id,
+                )
+            except CosmosBatchOperationError as exc:
+                if not self._is_precondition_failure(exc) or attempt == 31:
+                    raise
+                time.sleep(min(0.002 * (attempt + 1), 0.05))
+                continue
+            return count <= limit
+        raise RuntimeError("Agent request counter retry exhausted")
+
     def authenticate_agent_token(
         self,
         household_id: str,
@@ -276,6 +389,7 @@ class CosmosHouseholdStorage:
             household_id=UUID(household_id),
             connection_id=UUID(connection_id),
             scopes=[AgentScope(value) for value in document["scopes"]],
+            integration=OperationSource(document.get("integration", "api")),
         )
 
     def refresh_agent_token(
@@ -320,6 +434,7 @@ class CosmosHouseholdStorage:
                 household_id=UUID(household_id),
                 connection_id=UUID(connection_id),
                 scopes=[AgentScope(value) for value in updated["scopes"]],
+                integration=OperationSource(updated.get("integration", "api")),
             ),
             token_expires_at,
         )
@@ -330,26 +445,76 @@ class CosmosHouseholdStorage:
         connection_id: str,
         reason: str,
         now: datetime,
+        threshold: int,
+        window_seconds: int,
     ) -> None:
-        if self.read_household_document(household_id, connection_id) is None:
-            return
-        timestamp = now.isoformat().replace("+00:00", "Z")
+        timestamp = self._timestamp(now)
         operation_id = f"agent.auth:{connection_id}:{timestamp}"
-        audit = {
-            "id": f"audit:{hashlib.sha256(operation_id.encode()).hexdigest()}",
-            "entityType": "auditEvent",
-            "householdId": household_id,
-            "actor": {"type": "agent", "id": connection_id},
-            "scope": "authentication",
-            "action": "agent.authenticate",
-            "targetId": connection_id,
-            "operationId": operation_id,
-            "outcome": "rejected",
-            "reason": reason,
-            "changeSummary": {},
-            "createdAt": timestamp,
-        }
-        self._entities_container().create_item(body=audit)
+        for attempt in range(32):
+            document = self.read_household_document(household_id, connection_id)
+            if document is None or document.get("entityType") != "agentConnection":
+                return
+            window_start = self._window_start(
+                document.get("failedAuthWindowStartedAt"), now, window_seconds
+            )
+            window_text = self._timestamp(window_start)
+            count = (
+                int(document.get("failedAuthWindowCount", 0))
+                if document.get("failedAuthWindowStartedAt") == window_text
+                else 0
+            ) + 1
+            updated = dict(document)
+            updated["failedAuthWindowStartedAt"] = window_text
+            updated["failedAuthWindowCount"] = count
+            updated["updatedAt"] = timestamp
+            audit = {
+                "id": f"audit:{hashlib.sha256(operation_id.encode()).hexdigest()}",
+                "entityType": "auditEvent",
+                "householdId": household_id,
+                "actor": {"type": "agent", "id": connection_id},
+                "scope": "authentication",
+                "action": "agent.authenticate",
+                "source": document.get("integration", "api"),
+                "targetId": connection_id,
+                "operationId": operation_id,
+                "outcome": "rejected",
+                "reason": reason,
+                "changeSummary": {},
+                "createdAt": timestamp,
+            }
+            operations: list[tuple] = [
+                ("replace", (connection_id, updated), self._etag_kwargs(document)),
+                ("create", (audit,), {}),
+            ]
+            if (
+                count >= threshold
+                and document.get("failedAuthAnomalyWindow") != window_text
+            ):
+                updated["failedAuthAnomalyWindow"] = window_text
+                operations[0] = (
+                    "replace", (connection_id, updated), self._etag_kwargs(document)
+                )
+                anomaly = self._security_audit(
+                    household_id,
+                    updated,
+                    action="agent.authentication.anomaly",
+                    reason="repeatedInvalidToken",
+                    marker=window_text,
+                    count=count,
+                )
+                operations.append(("create", (anomaly,), {}))
+            try:
+                self._entities_container().execute_item_batch(
+                    batch_operations=operations,
+                    partition_key=household_id,
+                )
+            except CosmosBatchOperationError as exc:
+                if not self._is_precondition_failure(exc) or attempt == 31:
+                    raise
+                time.sleep(min(0.002 * (attempt + 1), 0.05))
+                continue
+            return
+        raise RuntimeError("Agent authentication counter retry exhausted")
 
     def list_agent_entities(
         self,
@@ -382,14 +547,29 @@ class CosmosHouseholdStorage:
         actor: Actor,
         entity_type: str,
         entity_id: str,
-        operation_id: str,
+        idempotency_key: str,
         scope: str,
         action: str,
+        source: str,
         payload: dict,
+        change_summary: dict,
         now: datetime,
     ) -> tuple[dict, bool]:
-        existing_operation = self._read_operation(household_id, operation_id)
+        request_hash = canonical_write_hash(
+            actor=actor,
+            scope=scope,
+            action=action,
+            source=source,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload,
+        )
+        existing_operation = self._read_operation(household_id, idempotency_key)
         if existing_operation is not None:
+            if existing_operation.get("requestHash") != request_hash:
+                raise ValueError(
+                    "Idempotency key was already used for a different write"
+                )
             result = self.read_household_document(
                 household_id, existing_operation["resultEntityId"]
             )
@@ -410,35 +590,43 @@ class CosmosHouseholdStorage:
             "updatedAt": timestamp,
             "deletedAt": None,
             "actor": actor.model_dump(mode="json"),
-            "operationId": operation_id,
-            "lastAcceptedMutationId": operation_id,
+            "operationId": idempotency_key,
+            "lastAcceptedMutationId": idempotency_key,
             "changeSequence": change_sequence,
             "payload": payload,
         }
         operation = {
-            "id": f"operation:{operation_id}",
+            "id": f"operation:{idempotency_key}",
             "entityType": "operation",
             "householdId": household_id,
             "actor": actor.model_dump(mode="json"),
             "scope": scope,
             "action": action,
+            "source": source,
+            "idempotencyKey": idempotency_key,
+            "requestHash": request_hash,
             "status": "accepted",
             "resultEntityId": entity_id,
+            "changeSummary": change_summary,
             "createdAt": timestamp,
             "updatedAt": timestamp,
         }
         audit = {
-            "id": f"audit:{operation_id}",
+            "id": f"audit:{idempotency_key}",
             "entityType": "auditEvent",
             "householdId": household_id,
             "actor": actor.model_dump(mode="json"),
             "scope": scope,
             "action": action,
+            "source": source,
             "targetId": entity_id,
-            "operationId": operation_id,
+            "operationId": idempotency_key,
+            "idempotencyKey": idempotency_key,
             "outcome": "accepted",
             "reason": None,
-            "changeSummary": {"created": True, "entityType": entity_type},
+            "priorRevision": change_summary.get("before", {}).get("revision") if change_summary.get("before") else None,
+            "newRevision": change_summary.get("after", {}).get("revision") if change_summary.get("after") else None,
+            "changeSummary": change_summary,
             "createdAt": timestamp,
         }
         try:
@@ -454,9 +642,13 @@ class CosmosHouseholdStorage:
         except (CosmosResourceExistsError, CosmosBatchOperationError) as exc:
             if getattr(exc, "status_code", 409) != 409:
                 raise
-            replay = self._read_operation(household_id, operation_id)
+            replay = self._read_operation(household_id, idempotency_key)
             if replay is None:
                 raise ValueError("Entity already exists") from exc
+            if replay.get("requestHash") != request_hash:
+                raise ValueError(
+                    "Idempotency key was already used for a different write"
+                ) from exc
             result = self.read_household_document(
                 household_id, replay["resultEntityId"]
             )
@@ -675,13 +867,18 @@ class CosmosHouseholdStorage:
         events = [
             AuditEventView(
                 operation_id=item["operationId"],
+                idempotency_key=item.get("idempotencyKey", item["operationId"]),
                 actor_type=item["actor"]["type"],
                 actor_id=item["actor"]["id"],
                 scope=item.get("scope", "owner.sync"),
                 action=item["action"],
+                source=item.get("source", "api"),
                 target_id=item["targetId"],
                 outcome=item["outcome"],
                 reason=item.get("reason"),
+                prior_revision=item.get("priorRevision"),
+                new_revision=item.get("newRevision"),
+                change_summary=item.get("changeSummary", {}),
                 created_at=item["createdAt"],
             )
             for item in page
@@ -841,9 +1038,22 @@ class CosmosHouseholdStorage:
         actor: Actor,
     ) -> LedgerCreateResult:
         household_id = str(request.household_id)
-        operation_id = str(request.operation_id)
+        operation_id = str(request.idempotency_key)
+        request_hash = canonical_write_hash(
+            actor=actor,
+            scope="ledger:create",
+            action="ledger.create",
+            source=request.source,
+            entity_type="ledgerEntry",
+            entity_id=str(request.id),
+            payload=request.model_dump(by_alias=True, mode="json"),
+        )
         existing = self._read_operation(household_id, operation_id)
         if existing is not None:
+            if existing.get("requestHash") != request_hash:
+                raise ValueError(
+                    "Idempotency key was already used for a different write"
+                )
             return self._replayed_result(household_id, existing)
 
         operation, entry, audit = build_ledger_transaction_documents(
@@ -874,6 +1084,10 @@ class CosmosHouseholdStorage:
             existing = self._read_operation(household_id, operation_id)
             if existing is None:
                 raise
+            if existing.get("requestHash") != request_hash:
+                raise ValueError(
+                    "Idempotency key was already used for a different write"
+                ) from exc
             return self._replayed_result(household_id, existing)
         return LedgerCreateResult(entry=entry, replayed=False)
 
@@ -1059,9 +1273,38 @@ class CosmosHouseholdStorage:
             connection_id=document["id"],
             name=document["name"],
             scopes=document["scopes"],
+            integration=document.get("integration", "api"),
             status=document["status"],
             grant_expires_at=document["grantExpiresAt"],
             created_at=document["createdAt"],
+            last_used_at=document.get("lastUsedAt"),
+        )
+
+    def _required_agent_connection(self, household_id: str, connection_id: str) -> dict:
+        document = self.read_household_document(household_id, connection_id)
+        if document is None or document.get("entityType") != "agentConnection":
+            raise ValueError("Agent connection not found")
+        return document
+
+    @staticmethod
+    def _timestamp(value: datetime) -> str:
+        return value.isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _window_start(value: str | None, now: datetime, seconds: int) -> datetime:
+        if value is not None:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if now < parsed + timedelta(seconds=seconds):
+                return parsed
+        return now
+
+    @staticmethod
+    def _is_precondition_failure(error: CosmosBatchOperationError) -> bool:
+        if error.status_code == 412:
+            return True
+        return any(
+            response.get("statusCode") == 412 or response.get("status_code") == 412
+            for response in (error.operation_responses or [])
         )
 
     @staticmethod
@@ -1101,7 +1344,38 @@ class CosmosHouseholdStorage:
             "operationId": operation_id,
             "outcome": "accepted",
             "reason": None,
-            "changeSummary": {"scopes": connection["scopes"], "status": connection["status"]},
+            "changeSummary": {
+                "scopes": connection["scopes"],
+                "integration": connection.get("integration", "api"),
+                "status": connection["status"],
+            },
+            "createdAt": connection["updatedAt"],
+        }
+
+    @staticmethod
+    def _security_audit(
+        household_id: str,
+        connection: dict,
+        *,
+        action: str,
+        reason: str,
+        marker: str,
+        count: int,
+    ) -> dict:
+        operation_id = f"{action}:{connection['id']}:{marker}"
+        return {
+            "id": f"audit:{hashlib.sha256(operation_id.encode()).hexdigest()}",
+            "entityType": "auditEvent",
+            "householdId": household_id,
+            "actor": {"type": "agent", "id": connection["id"]},
+            "scope": "authentication",
+            "action": action,
+            "source": connection.get("integration", "api"),
+            "targetId": connection["id"],
+            "operationId": operation_id,
+            "outcome": "rejected",
+            "reason": reason,
+            "changeSummary": {"attemptCount": count},
             "createdAt": connection["updatedAt"],
         }
 
