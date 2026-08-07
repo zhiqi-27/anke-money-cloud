@@ -120,8 +120,15 @@ def _validate_entity_payload(
         _require_integer(payload, "sortOrder")
         _require_boolean(payload, "isArchived")
         _require_boolean(payload, "isSystem")
-        if payload.get("direction") not in {"expense", "income"}:
-            raise ValueError("Category direction is invalid")
+        scope = payload.get("scope", "ledger")
+        if scope == "asset":
+            if payload.get("assetGroup") not in {"financial", "living", "receivable"}:
+                raise ValueError("Asset category group is invalid")
+        elif scope == "ledger":
+            if payload.get("direction") not in {"expense", "income"}:
+                raise ValueError("Category direction is invalid")
+        else:
+            raise ValueError("Category scope is invalid")
     elif entity_type is SyncEntityType.member_profile:
         _require_string(payload, "name")
 

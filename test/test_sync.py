@@ -274,6 +274,32 @@ class CloudSyncTest(unittest.TestCase):
                 created_at=datetime.now(UTC),
             )
 
+    def test_asset_categories_share_the_category_contract_with_an_asset_scope(self):
+        payload = {
+            "name": "存款",
+            "symbolName": "building.columns",
+            "sortOrder": 0,
+            "isArchived": False,
+            "isSystem": True,
+            "scope": "asset",
+            "assetGroup": "financial",
+        }
+        item = mutation(
+            self.device_id,
+            entity_type=SyncEntityType.category,
+            entity_id="deposit",
+            payload=payload,
+        )
+
+        self.assertEqual(item.payload["scope"], "asset")
+        self.assertTrue(item.payload["isSystem"])
+        with self.assertRaises(ValidationError):
+            mutation(
+                self.device_id,
+                entity_type=SyncEntityType.category,
+                payload={**payload, "assetGroup": "liability"},
+            )
+
     def test_migration_tombstone_digest_matches_ios_vector(self):
         item = MigrationItem(
             entity_type=SyncEntityType.payment_channel,

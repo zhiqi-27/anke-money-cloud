@@ -423,6 +423,7 @@ class CloudService:
                 ),
                 "category": (
                     "name", "symbolName", "sortOrder", "isArchived", "isSystem", "direction",
+                    "scope", "assetGroup",
                 ),
             }.get(document["entityType"], ())
             payload = {key: document.get(key) for key in fields}
