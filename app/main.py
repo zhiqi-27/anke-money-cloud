@@ -7,7 +7,7 @@ import uuid
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.auth import AuthenticatedIdentity
 from app.config import get_settings
@@ -136,6 +136,20 @@ async def me(
     identity: AuthenticatedIdentity = Depends(current_identity),
 ) -> dict[str, str]:
     return {"uid": identity.uid}
+
+
+@fastapi_app.delete(
+    "/api/v1/account",
+    tags=["identity"],
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Permanently erase the owner account and Anke Cloud data",
+)
+async def delete_account(
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> Response:
+    service.delete_account(identity)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @fastapi_app.post(

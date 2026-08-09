@@ -154,6 +154,32 @@ class CosmosHouseholdStorage:
         identity = self._read_identity(uid)
         return identity.get("householdId") if identity else None
 
+    def delete_account_data(self, uid: str) -> int:
+        identity = self._read_identity(uid)
+        if identity is None:
+            return 0
+        household_id = identity["householdId"]
+        documents = list(self._entities_container().query_items(
+            query="SELECT c.id FROM c WHERE c.householdId = @householdId",
+            parameters=[{"name": "@householdId", "value": household_id}],
+            partition_key=household_id,
+        ))
+        deleted = 0
+        for document in documents:
+            try:
+                self._entities_container().delete_item(
+                    item=document["id"],
+                    partition_key=household_id,
+                )
+                deleted += 1
+            except CosmosResourceNotFoundError:
+                continue
+        try:
+            self._identities_container().delete_item(item=uid, partition_key=uid)
+        except CosmosResourceNotFoundError:
+            pass
+        return deleted
+
     def run_retention(self, now: datetime) -> RetentionResult:
         tombstone_cutoff = (now - timedelta(days=30)).isoformat().replace("+00:00", "Z")
         audit_cutoff = (now - timedelta(days=365)).isoformat().replace("+00:00", "Z")

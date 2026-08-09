@@ -54,6 +54,9 @@ Azure Functions locally. Do not populate or commit the example.
 - `POST /api/v1/sync/push` — accepts ordered, idempotent device mutations
 - `GET /api/v1/sync/pull` — returns changes after an opaque cursor
 - `GET /api/v1/audit` — returns redacted owner-visible mutation outcomes
+- `DELETE /api/v1/account` — idempotently erases the authenticated owner's
+  complete Agent Cloud workspace and UID membership during the in-app privacy
+  deletion flow
 - `POST /api/v1/migrations` — stages a verified Local/iCloud snapshot
 - `POST /api/v1/migrations/activate` — atomically activates a staged manifest
 - `POST /api/v1/agent-connections` — creates a scoped owner-authorized Agent
@@ -81,6 +84,11 @@ migration payloads cannot choose a household or actor. A registered device uses
 one ascending outbox sequence; a repeated mutation ID returns its stored result.
 Revision mismatches return explicit conflicts, and accepted deletes publish
 tombstones rather than physically erasing the entity.
+
+Normal entity deletion and privacy erasure are separate operations. The account
+endpoint is owner-authenticated and deletes the whole household partition plus
+the UID membership record; it is not an Agent scope and is safe to retry after a
+partial client-side Apple/Firebase account-deletion flow.
 
 Agent endpoints use a separate bearer-token boundary from Firebase owner APIs.
 Only the token hash is retained. Read-only grants are capped at 7 days, grants

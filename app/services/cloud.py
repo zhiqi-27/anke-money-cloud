@@ -52,6 +52,14 @@ class CloudService:
     ) -> BootstrapResponse:
         return self._storage.bootstrap_owner(identity.uid, registration)
 
+    def delete_account(self, identity: AuthenticatedIdentity) -> int:
+        """Erase the owner identity membership and every household document.
+
+        The operation is intentionally idempotent so a client can safely retry
+        after transport loss without recreating or retaining account data.
+        """
+        return self._storage.delete_account_data(identity.uid)
+
     def create_agent_connection(
         self,
         identity: AuthenticatedIdentity,

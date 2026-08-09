@@ -101,3 +101,16 @@ not promote the Development deployment recorded earlier in this file.
       six-tool authorization and service boundary.
 - [x] Current A3/A4 code is deployed to Development and passes lifecycle, rate,
       anomaly, malicious-parameter, immutable-audit, and two-client E2E.
+
+## Phase 5 privacy-erasure checkpoint
+
+- [x] The authenticated owner API exposes idempotent complete account erasure.
+- [x] In-memory and Cosmos adapters remove every household-partition document and
+      the UID membership record; a retry returns success without recreating data.
+- [x] The credential-free suite covers the HTTP route, OpenAPI contract, service,
+      in-memory storage, and Cosmos adapter shape.
+- [x] Current privacy-erasure code is deployed to Development and exercised only
+      against an exact synthetic household with verified cleanup.
+
+Local account-erasure tests do not prove Firebase/Apple token revocation, deployed
+Cosmos behavior, a signed iOS client, or Production deletion.

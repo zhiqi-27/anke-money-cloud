@@ -293,11 +293,18 @@ class CloudSyncTest(unittest.TestCase):
 
         self.assertEqual(item.payload["scope"], "asset")
         self.assertTrue(item.payload["isSystem"])
+        liability = mutation(
+            self.device_id,
+            entity_type=SyncEntityType.category,
+            entity_id="mortgage",
+            payload={**payload, "name": "房贷", "assetGroup": "liability"},
+        )
+        self.assertEqual(liability.payload["assetGroup"], "liability")
         with self.assertRaises(ValidationError):
             mutation(
                 self.device_id,
                 entity_type=SyncEntityType.category,
-                payload={**payload, "assetGroup": "liability"},
+                payload={**payload, "assetGroup": "other"},
             )
 
     def test_migration_tombstone_digest_matches_ios_vector(self):

@@ -126,6 +126,20 @@ class InMemoryHouseholdStorage:
     def household_for_uid(self, uid: str) -> str | None:
         return self._identities.get(uid)
 
+    def delete_account_data(self, uid: str) -> int:
+        with self._lock:
+            household_id = self._identities.get(uid)
+            if household_id is None:
+                return 0
+            keys = [key for key in self._items if key[0] == household_id]
+            for key in keys:
+                del self._items[key]
+            self._identities.pop(uid, None)
+            self._changes.pop(household_id, None)
+            for key in [key for key in self._device_sequences if key[0] == household_id]:
+                del self._device_sequences[key]
+            return len(keys)
+
     def run_retention(self, now: datetime) -> RetentionResult:
         tombstone_cutoff = now - timedelta(days=30)
         audit_cutoff = now - timedelta(days=365)

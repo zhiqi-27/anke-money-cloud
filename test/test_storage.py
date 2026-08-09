@@ -179,6 +179,12 @@ class FakeIdentityContainer:
         self.items[(body["uid"], body["id"])] = body
         return body
 
+    def delete_item(self, *, item, partition_key):
+        try:
+            del self.items[(partition_key, item)]
+        except KeyError as exc:
+            raise CosmosResourceNotFoundError() from exc
+
 
 class InMemoryHouseholdStorageTest(unittest.TestCase):
     def test_create_is_atomic_shape_and_idempotent(self):
@@ -309,6 +315,34 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
             {item["entityType"] for item in household_documents},
             {"user", "household", "device", "connection"},
         )
+
+    def test_account_deletion_erases_cosmos_partition_and_identity_idempotently(self):
+        entities = FakeCosmosContainer()
+        identities = FakeIdentityContainer()
+        storage = CosmosHouseholdStorage(
+            settings(),
+            container=entities,
+            identities_container=identities,
+        )
+        bootstrap = storage.bootstrap_owner(
+            "firebase-user-1",
+            DeviceRegistration(
+                device_id=uuid4(),
+                name="Synthetic iPhone",
+                app_version="0.1.0",
+            ),
+        )
+        household_id = str(bootstrap.household_id)
+
+        deleted = storage.delete_account_data("firebase-user-1")
+        replayed = storage.delete_account_data("firebase-user-1")
+
+        self.assertEqual(deleted, 4)
+        self.assertEqual(replayed, 0)
+        self.assertFalse(any(
+            partition == household_id for partition, _ in entities.items
+        ))
+        self.assertEqual(identities.items, {})
 
     def test_sync_acceptance_batches_entity_operation_audit_and_device_sequence(self):
         entities = FakeCosmosContainer()

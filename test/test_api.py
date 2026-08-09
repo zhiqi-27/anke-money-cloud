@@ -75,6 +75,7 @@ class ApiContractTest(unittest.TestCase):
         paths = response.json()["paths"]
         self.assertIn("/ping", paths)
         self.assertIn("/api/v1/me", paths)
+        self.assertIn("/api/v1/account", paths)
         self.assertIn("/api/v1/bootstrap", paths)
         self.assertIn("/api/v1/sync/push", paths)
         self.assertIn("/api/v1/sync/pull", paths)
@@ -159,6 +160,26 @@ class ApiContractTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"uid": "firebase-user-1"})
+
+    def test_account_deletion_erases_household_and_is_idempotent(self):
+        storage = InMemoryHouseholdStorage()
+        fastapi_app.dependency_overrides[cloud_service] = lambda: CloudService(storage)
+        headers = {"Authorization": "Bearer valid-test-token"}
+        body = {
+            "deviceId": "22222222-2222-2222-2222-222222222222",
+            "name": "Synthetic iPhone",
+            "platform": "ios",
+            "appVersion": "0.1.0",
+        }
+
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            self.assertEqual(self.client.post("/api/v1/bootstrap", headers=headers, json=body).status_code, 200)
+            first = self.client.delete("/api/v1/account", headers=headers)
+            second = self.client.delete("/api/v1/account", headers=headers)
+
+        self.assertEqual(first.status_code, 204)
+        self.assertEqual(second.status_code, 204)
+        self.assertIsNone(storage.household_for_uid("firebase-user-1"))
 
     def test_azure_functions_entry_imports_without_credentials(self):
         import function_app

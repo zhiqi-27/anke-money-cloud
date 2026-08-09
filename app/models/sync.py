@@ -122,7 +122,7 @@ def _validate_entity_payload(
         _require_boolean(payload, "isSystem")
         scope = payload.get("scope", "ledger")
         if scope == "asset":
-            if payload.get("assetGroup") not in {"financial", "living", "receivable"}:
+            if payload.get("assetGroup") not in {"financial", "living", "receivable", "liability"}:
                 raise ValueError("Asset category group is invalid")
         elif scope == "ledger":
             if payload.get("direction") not in {"expense", "income"}:

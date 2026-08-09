@@ -37,6 +37,8 @@ class RetentionResult:
 class HouseholdStorage(Protocol):
     def run_retention(self, now: datetime) -> RetentionResult: ...
 
+    def delete_account_data(self, uid: str) -> int: ...
+
     def create_agent_connection(
         self,
         household_id: str,
