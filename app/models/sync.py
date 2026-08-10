@@ -259,7 +259,6 @@ class AuditListResponse(APIModel):
 
 class MigrationSourceMode(str, Enum):
     local = "local"
-    cloudkit = "cloudkit"
 
 
 class MigrationManifest(APIModel):

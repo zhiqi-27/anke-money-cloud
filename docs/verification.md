@@ -31,6 +31,7 @@ not prove Development cloud or Production behavior.
 | 2026-08-09 | Development Phase 5 route audit | Read-only deployed OpenAPI inspection | `GET /openapi.json` returned 200, but `/api/v1/account` was absent | Pending deployment; no authenticated deletion request or cloud mutation was performed |
 | 2026-08-09 | Development Phase 5 deployment | Exact 26-file runtime package, Azure Flex Consumption remote build, trigger discovery, and public boundary | Deployed package SHA-256 `f79da5fa634173d1e0e1a5263f096a313b3e115cfb2b660bf37cec86a35fc687` to `func-anke-money-dev-zq01` in `anke-money-dev`; `/ping` returned 200; OpenAPI exposed only `DELETE` for `/api/v1/account`; an unauthenticated deletion returned 401 | Passed; Azure registered `http_app_func` and `enforce_data_retention` |
 | 2026-08-09 | Development Phase 5 privacy erasure E2E | Real Firebase authentication, deployed account endpoint, Cosmos-backed synthetic workspace, idempotent deletion, and cleanup | A random `smoke-backend-privacy-` owner bootstrapped an empty workspace, received 204 for the first and retried deletion, then received 409 from sync because membership no longer existed | Passed; exact synthetic Firebase user deleted in `finally`; no real user data was read or changed |
+| 2026-08-10 | Local two-authority migration contract | Local-only migration provenance, OpenAPI rejection of removed CloudKit input, and active-workspace migration gating in both storage adapters | Python 3.12 credential-free suite, compile verification, and `git diff --check` | Passed; 74 tests, 0 failures; no Development deployment, Cosmos schema change, or live-data access |
 
 ## Remaining evidence boundaries
 
@@ -39,7 +40,7 @@ not prove Development cloud or Production behavior.
 - Production deployment, secrets, schema promotion, and production data were not
   accessed or changed.
 - The Development A1+A2 E2E proves the deployed synthetic workflow and real Cosmos
-  persistence. It does not prove a signed iOS local/iCloud migration, source-store
+  persistence. It does not prove a signed iOS Local migration, source-store
   archival on a device, or a second physical device reconnect.
 - The retention timer is deployed and registered, but its destructive lifecycle
   behavior still has local adapter evidence only; no operational timer invocation

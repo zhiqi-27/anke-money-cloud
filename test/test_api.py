@@ -102,7 +102,10 @@ class ApiContractTest(unittest.TestCase):
         )
         self.assertIn("HTTPBearer", response.json()["components"]["securitySchemes"])
         self.assertIn("AgentBearer", response.json()["components"]["securitySchemes"])
-
+        self.assertEqual(
+            response.json()["components"]["schemas"]["MigrationSourceMode"]["enum"],
+            ["local"],
+        )
         agent_methods = {
             path: set(operation.keys())
             for path, operation in paths.items()
@@ -125,6 +128,42 @@ class ApiContractTest(unittest.TestCase):
             )
         ))
         self.assertIn("AgentRefreshBearer", response.json()["components"]["securitySchemes"])
+
+    def test_cloudkit_migration_source_is_rejected(self):
+        storage = InMemoryHouseholdStorage()
+        service = CloudService(storage)
+        fastapi_app.dependency_overrides[cloud_service] = lambda: service
+        headers = {"Authorization": "Bearer valid-test-token"}
+        device_id = "abababab-abab-abab-abab-abababababab"
+        digest = hashlib.sha256(b"[]").hexdigest()
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            self.client.post(
+                "/api/v1/bootstrap",
+                headers=headers,
+                json={
+                    "deviceId": device_id,
+                    "name": "iPhone",
+                    "platform": "ios",
+                    "appVersion": "0.1.0",
+                },
+            )
+            response = self.client.post(
+                "/api/v1/migrations",
+                headers=headers,
+                json={
+                    "deviceId": device_id,
+                    "manifest": {
+                        "sessionId": "11111111-1111-1111-1111-111111111111",
+                        "sourceMode": "cloudkit",
+                        "schemaVersion": 1,
+                        "recordCounts": {},
+                        "contentDigest": digest,
+                    },
+                    "items": [],
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
 
     def test_protected_route_rejects_missing_or_invalid_token(self):
         with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):

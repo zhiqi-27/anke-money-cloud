@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, timedelta
+import hashlib
 import unittest
 from uuid import uuid4
 
@@ -14,6 +15,9 @@ from app.models import (
     EntryKind,
     LedgerDirection,
     LedgerEntryCreate,
+    MigrationManifest,
+    MigrationSourceMode,
+    MigrationUploadRequest,
     MutationAction,
     MutationStatus,
     SyncEntityType,
@@ -232,6 +236,45 @@ class InMemoryHouseholdStorageTest(unittest.TestCase):
 
 
 class CosmosHouseholdStorageTest(unittest.TestCase):
+    def test_active_empty_workspace_rejects_a_new_migration_session(self):
+        entities = FakeCosmosContainer()
+        identities = FakeIdentityContainer()
+        storage = CosmosHouseholdStorage(
+            settings(), container=entities, identities_container=identities
+        )
+        device_id = uuid4()
+        bootstrap = storage.bootstrap_owner(
+            "firebase-user-1",
+            DeviceRegistration(
+                device_id=device_id,
+                name="Synthetic iPhone",
+                app_version="0.1.0",
+            ),
+        )
+        household_id = str(bootstrap.household_id)
+        entities.items[(household_id, household_id)]["status"] = "active"
+        digest = hashlib.sha256(b"[]").hexdigest()
+        request = MigrationUploadRequest(
+            device_id=device_id,
+            manifest=MigrationManifest(
+                session_id=uuid4(),
+                source_mode=MigrationSourceMode.local,
+                schema_version=1,
+                record_counts={},
+                content_digest=digest,
+            ),
+            items=[],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "Migration requires an empty Agent Cloud household"
+        ):
+            storage.stage_migration(
+                household_id,
+                Actor(type=ActorType.user, id="firebase-user-1"),
+                request,
+            )
+
     def test_ledger_create_uses_three_item_household_batch(self):
         container = FakeCosmosContainer()
         storage = CosmosHouseholdStorage(settings(), container=container)

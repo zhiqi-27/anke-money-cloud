@@ -4,8 +4,8 @@ Private backend for Anke Money Agent Cloud: Firebase-authenticated FastAPI on Az
 Functions, Azure Cosmos DB persistence, synchronization, audit, and future Remote
 MCP/Skill adapters.
 
-The service is a coordination backend for an explicitly enabled Agent Cloud mode.
-The iOS app remains usable in local-only and iCloud modes without this service.
+The service coordinates the signed-in cloud workspace. The iOS app has two storage
+authorities: signed-out Local storage and the signed-in Anke service.
 
 ## Repository map
 
@@ -57,7 +57,7 @@ Azure Functions locally. Do not populate or commit the example.
 - `DELETE /api/v1/account` — idempotently erases the authenticated owner's
   complete Agent Cloud workspace and UID membership during the in-app privacy
   deletion flow
-- `POST /api/v1/migrations` — stages a verified Local/iCloud snapshot
+- `POST /api/v1/migrations` — stages a verified Local snapshot
 - `POST /api/v1/migrations/activate` — atomically activates a staged manifest
 - `POST /api/v1/agent-connections` — creates a scoped owner-authorized Agent
   connection and returns its short-lived access token once

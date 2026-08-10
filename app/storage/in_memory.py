@@ -744,6 +744,11 @@ class InMemoryHouseholdStorage:
                     content_digest=existing["contentDigest"],
                     replayed=True,
                 )
+            household = self._items.get((household_id, household_id))
+            if household is None or household.get("entityType") != "household":
+                raise ValueError("Migration household is missing")
+            if household.get("status") != "empty":
+                raise ValueError("Migration requires an empty Agent Cloud household")
             user_entities = [item for (partition, _), item in self._items.items() if partition == household_id and item.get("entityType") in {item.value for item in SyncEntityType}]
             if user_entities:
                 raise ValueError("Migration requires an empty Agent Cloud household")

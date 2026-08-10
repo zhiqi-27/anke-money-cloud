@@ -937,13 +937,13 @@ class CosmosHouseholdStorage:
         digest = self._migration_digest(request)
         if digest != request.manifest.content_digest:
             raise ValueError("Migration content digest does not match the manifest")
-        if existing is None and self._has_user_entities(household_id):
-            raise ValueError("Migration requires an empty Agent Cloud household")
         now = self._now()
         if existing is None:
             household = self.read_household_document(household_id, household_id)
             if household is None or household.get("entityType") != "household":
                 raise ValueError("Migration household is missing")
+            if household.get("status") != "empty" or self._has_user_entities(household_id):
+                raise ValueError("Migration requires an empty Agent Cloud household")
             first_change_sequence = int(household.get("lastChangeSequence", 0)) + 1
             updated_household = dict(household)
             updated_household["lastChangeSequence"] = (

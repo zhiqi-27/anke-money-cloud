@@ -52,7 +52,9 @@ behavior.
 - [x] Stale revisions return the server entity as an explicit conflict.
 - [x] Accepted deletion produces a revisioned tombstone.
 - [x] Accepted, rejected, and conflicted writes create a redacted audit event.
-- [x] Local/iCloud migration uses a stable resumable session, verified counts, and a canonical SHA-256 digest.
+- [x] Local migration uses a stable resumable session, verified counts, and a canonical SHA-256 digest.
+- [x] Migration accepts only Local provenance, and a new session requires the
+      server-owned workspace status to be `empty`.
 - [x] Cosmos writes batch the accepted entity, operation result, audit event, and device sequence in one household partition.
 - [x] Owner APIs create, list, and revoke scoped Agent connections without storing plaintext tokens.
 - [x] Remote Agent ledger writes are idempotent, audited, and visible to the app's next cursor pull.
@@ -63,7 +65,7 @@ behavior.
 - [x] Empty or staging workspaces reject normal sync writes and Agent authorization until migration activation.
 - [x] The daily retention function idempotently purges 30-day tombstone payloads and deletes 365-day audit events in local adapter tests.
 - [x] The new A1 API has been deployed to Development and exercised against real Cosmos.
-- [ ] A real local/iCloud dataset has completed staged upload, activation, reconnect pull, and source-archive verification.
+- [ ] A real Local dataset has completed staged upload, activation, reconnect pull, and source-archive verification.
 - [ ] Tombstone payload purge and 365-day audit retention have operational timer evidence.
 
 Checked items above are local contract, unit, and adapter evidence only. They do

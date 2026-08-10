@@ -167,3 +167,24 @@ and audit code. There is no data-model or migration impact and no dual business
 API. The legacy adapter may be removed after post-launch interoperability evidence
 shows the supported Agent products use `2026-07-28`; rollback before that point is
 to retain the adapter, not to downgrade the canonical protocol or data contract.
+
+## Approved amendment · 2026-08-10 · Two-authority storage and Local-only migration
+
+Anke Money has exactly two storage authorities: signed-out Local storage and the
+signed-in Anke service. This amendment supersedes A0-02's three-mode table and
+removes iCloud / CloudKit as an app storage mode, capability, migration source,
+and release gate. Completing authentication starts the existing staged,
+digest-verified, idempotently resumable Local-to-cloud migration; the service
+accepts only `local` as migration provenance.
+
+A new migration session is accepted only while the server-owned household status
+is `empty`. An active workspace may be attached by an empty Local store, but an
+independent non-empty Local store cannot be uploaded or silently merged into it.
+This is enforced by both the client and service.
+
+There is no Cosmos container, partition, or financial-document migration. Existing
+migration-session provenance remains historical audit metadata and is not rewritten
+or deleted. No public client used the removed `cloudkit` API value, so no API
+compatibility window is required. Rollback would require a new product amendment
+and restoration of the removed client capability and API enum; it cannot introduce
+CloudKit and the Anke service as concurrent writers.

@@ -230,6 +230,26 @@ class CloudSyncTest(unittest.TestCase):
         )
         self.assertEqual(empty_pull.changes, [])
 
+    def test_active_empty_workspace_rejects_a_new_migration_session(self):
+        self.activate_empty_workspace()
+        digest = hashlib.sha256(b"[]").hexdigest()
+        request = MigrationUploadRequest(
+            device_id=self.device_id,
+            manifest=MigrationManifest(
+                session_id=uuid4(),
+                source_mode=MigrationSourceMode.local,
+                schema_version=1,
+                record_counts={},
+                content_digest=digest,
+            ),
+            items=[],
+        )
+
+        with self.assertRaisesRegex(
+            ValueError, "Migration requires an empty Agent Cloud household"
+        ):
+            self.service.stage_migration(self.identity, request)
+
     def test_money_rejects_float_and_ledger_update_is_forbidden(self):
         with self.assertRaises(ValidationError):
             mutation(self.device_id, payload=ledger_payload(12.5))

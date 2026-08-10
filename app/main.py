@@ -444,7 +444,7 @@ async def audit_events(
     "/api/v1/migrations",
     tags=["migration"],
     response_model=MigrationResponse,
-    summary="Stage an idempotent Local or iCloud snapshot migration",
+    summary="Stage an idempotent Local snapshot migration",
 )
 async def stage_migration(
     request: MigrationUploadRequest,
