@@ -63,10 +63,29 @@ class AgentAccessTest(unittest.TestCase):
         self.assertEqual(set(principal.scopes), set(AgentScope))
         self.assertEqual(set(created.scopes), set(AgentScope))
         self.assertTrue(created.api_key.startswith("ank_"))
+        self.assertEqual(len(created.api_key), 59)
         self.assertNotEqual(stored["keyHash"], created.api_key)
         self.assertNotIn("apiKey", stored)
         self.assertNotIn("grantExpiresAt", stored)
         self.assertNotIn("refreshTokenHash", stored)
+
+    def test_precompact_full_capability_api_key_remains_valid_until_reset(self):
+        created = self.cloud.create_agent_api_key(self.identity, self.access)
+        household_id = str(self.bootstrap.household_id)
+        legacy_key = f"ank_{household_id}_{created.connection_id}_{'A' * 43}"
+        self.storage.replace_agent_api_key(
+            household_id,
+            Actor(type=ActorType.user, id=self.identity.uid),
+            str(created.connection_id),
+            self.access.hash_token(legacy_key),
+            legacy_key[:13],
+            datetime.now(UTC),
+        )
+
+        self.assertEqual(
+            self.access.authenticate(legacy_key).connection_id,
+            created.connection_id,
+        )
 
     def test_api_key_creates_idempotent_remote_entry_and_app_pull_sees_it(self):
         created = self.cloud.create_agent_api_key(self.identity, self.access)

@@ -538,7 +538,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         access.authenticate(created.api_key)
         with self.assertRaises(AgentRateLimitExceededError):
             access.authenticate(created.api_key)
-        forged = created.api_key.rsplit("_", 1)[0] + "_forged"
+        forged = created.api_key[:-1] + ("A" if created.api_key[-1] != "A" else "B")
         for _ in range(3):
             with self.assertRaises(InvalidAgentTokenError):
                 access.authenticate(forged)

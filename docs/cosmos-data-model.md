@@ -109,6 +109,11 @@ plaintext is returned only by create/reset and is never persisted. It has no exp
 or refresh credential. Reset replaces the hash, revocation changes lifecycle state,
 and either action is enforced on the next request.
 
+New plaintext keys use the compact URL-safe form
+`ank_<compact-household-id>.<192-bit-random-secret>`. The persisted document shape
+is unchanged: only the SHA-256 hash and display prefix are stored. Authentication
+continues to accept previously issued full-capability keys until reset or revocation.
+
 Lifecycle metadata includes nullable `lastUsedAt`, a 60-second request window
 start/count, and a five-minute failed-auth window start/count plus the last
 deduplicated anomaly threshold. Creating or resetting the API Key also removes any

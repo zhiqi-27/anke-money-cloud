@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import UTC, datetime
 import hashlib
 import secrets
@@ -44,7 +46,7 @@ class AgentAccessService:
             NAMESPACE_URL,
             f"anke-agent-api-key:{household_id}",
         )
-        api_key = self._new_api_key(household_id, connection_id)
+        api_key = self._new_api_key(household_id)
         view = self._storage.replace_agent_api_key(
             household_id,
             Actor(type=ActorType.user, id=owner_uid),
@@ -59,14 +61,7 @@ class AgentAccessService:
         )
 
     def authenticate(self, token: str) -> AgentPrincipal:
-        parts = token.split("_", maxsplit=3)
-        if len(parts) != 4 or parts[0] != "ank":
-            raise InvalidAgentTokenError("Malformed agent API key")
-        try:
-            household_id = str(UUID(parts[1]))
-            connection_id = str(UUID(parts[2]))
-        except ValueError as exc:
-            raise InvalidAgentTokenError("Malformed agent API key") from exc
+        household_id, connection_id = self._token_coordinates(token)
         now = datetime.now(UTC)
         principal = self._storage.authenticate_agent_api_key(
             household_id,
@@ -99,5 +94,50 @@ class AgentAccessService:
         return hashlib.sha256(token.encode()).hexdigest()
 
     @staticmethod
-    def _new_api_key(household_id: str | UUID, connection_id: str | UUID) -> str:
-        return f"ank_{household_id}_{connection_id}_{secrets.token_urlsafe(32)}"
+    def _new_api_key(household_id: str | UUID) -> str:
+        compact_household_id = base64.urlsafe_b64encode(
+            UUID(str(household_id)).bytes
+        ).decode("ascii").rstrip("=")
+        return f"ank_{compact_household_id}.{secrets.token_urlsafe(24)}"
+
+    @staticmethod
+    def _token_coordinates(token: str) -> tuple[str, str]:
+        if not token.startswith("ank_"):
+            raise InvalidAgentTokenError("Malformed agent API key")
+
+        payload = token.removeprefix("ank_")
+        compact_household_id, separator, secret = payload.partition(".")
+        if separator:
+            try:
+                decoded = base64.b64decode(
+                    compact_household_id + "==",
+                    altchars=b"-_",
+                    validate=True,
+                )
+                household_uuid = UUID(bytes=decoded)
+            except (binascii.Error, ValueError) as exc:
+                raise InvalidAgentTokenError("Malformed agent API key") from exc
+            if (
+                len(compact_household_id) != 22
+                or len(secret) != 32
+                or any(
+                    not (character.isalnum() or character in "-_")
+                    for character in secret
+                )
+            ):
+                raise InvalidAgentTokenError("Malformed agent API key")
+            household_id = str(household_uuid)
+            connection_id = str(uuid5(
+                NAMESPACE_URL,
+                f"anke-agent-api-key:{household_id}",
+            ))
+            return household_id, connection_id
+
+        # Compatibility for full-capability keys created before the compact format.
+        parts = token.split("_", maxsplit=3)
+        if len(parts) != 4 or parts[0] != "ank" or not parts[3]:
+            raise InvalidAgentTokenError("Malformed agent API key")
+        try:
+            return str(UUID(parts[1])), str(UUID(parts[2]))
+        except ValueError as exc:
+            raise InvalidAgentTokenError("Malformed agent API key") from exc

@@ -93,8 +93,7 @@ class AgentSecurityTest(unittest.TestCase):
     def test_repeated_invalid_known_connection_tokens_raise_one_anomaly_without_lockout(self):
         access = AgentAccessService(self.storage, failed_auth_threshold=5)
         created = self.cloud.create_agent_api_key(self.identity, access)
-        prefix = created.api_key.rsplit("_", maxsplit=1)[0]
-        forged = f"{prefix}_forged"
+        forged = created.api_key[:-1] + ("A" if created.api_key[-1] != "A" else "B")
 
         for _ in range(6):
             with self.assertRaises(InvalidAgentTokenError):

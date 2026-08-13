@@ -27,6 +27,11 @@ audit-log operations remain outside the Agent surface. Asset update is limited t
 one appended snapshot. Direct Agent HTTP and Remote MCP verify the same revocable
 key on every request and never receive a client-selected household ID or source.
 
+New keys use a compact, URL-safe format containing a compact household locator and
+a 192-bit random secret. Previously issued full-capability keys remain valid until
+reset or revocation; removed limited-access credentials remain invalid. Neither
+format is logged or persisted as plaintext.
+
 Remote MCP prefers the stateless `2026-07-28` wire protocol and temporarily
 accepts `2025-11-25` clients at the same endpoint. Protocol negotiation cannot
 change credentials, scopes, household selection, rate limits, idempotency, tool

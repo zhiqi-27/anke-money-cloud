@@ -228,3 +228,17 @@ immediately, and creating/resetting the new API Key deletes legacy credential
 documents while retaining append-only audit history. There is no financial-data or
 container migration. Rollback requires a new product amendment and a deliberate
 credential migration; old limited credentials must not silently become valid.
+
+## Approved amendment · 2026-08-13 · Compact full-capability API Key format
+
+New full-capability keys encode the household UUID as a compact URL-safe locator
+and pair it with a 192-bit random secret. The plaintext length is fixed at 59
+characters, while Cosmos continues to store only its SHA-256 hash and display
+prefix. Previously issued long full-capability keys remain valid until reset or
+revocation; removed limited-access credentials remain rejected.
+
+This changes neither the deterministic connection identity nor any capability,
+partition, document, rate-limit, audit, or revocation rule. No stored document or
+financial-data migration is required. Rollback may resume issuing the longer
+full-capability format while retaining both parsers until all compact keys have
+been reset or revoked.
