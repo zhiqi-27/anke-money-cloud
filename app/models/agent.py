@@ -25,49 +25,17 @@ class OperationSource(str, Enum):
     skill = "skill"
 
 
-class AgentConnectionCreate(APIModel):
-    name: str = Field(min_length=1, max_length=120)
-    scopes: list[AgentScope] = Field(min_length=1, max_length=6)
-    integration: OperationSource = OperationSource.api
-    grant_duration_seconds: int | None = Field(default=None, ge=60)
-
-    @model_validator(mode="after")
-    def scope_and_lifetime(self) -> "AgentConnectionCreate":
-        if len(self.scopes) != len(set(self.scopes)):
-            raise ValueError("Agent scopes must be unique")
-        has_write = any(
-            scope in {AgentScope.ledger_create, AgentScope.assets_update}
-            for scope in self.scopes
-        )
-        maximum = 24 * 60 * 60 if has_write else 7 * 24 * 60 * 60
-        default = 60 * 60 if has_write else 24 * 60 * 60
-        duration = self.grant_duration_seconds or default
-        if duration > maximum:
-            raise ValueError("Agent grant duration exceeds the allowed maximum")
-        self.grant_duration_seconds = duration
-        return self
-
-
-class AgentConnectionView(APIModel):
+class AgentAPIKeyView(APIModel):
     connection_id: UUID
-    name: str
-    scopes: list[AgentScope]
-    integration: OperationSource
+    key_prefix: str
     status: str
-    grant_expires_at: datetime
     created_at: datetime
     last_used_at: datetime | None = None
+    scopes: list[AgentScope]
 
 
-class AgentConnectionCreated(AgentConnectionView):
-    access_token: str
-    token_expires_at: datetime
-    refresh_token: str
-
-
-class AgentAccessToken(APIModel):
-    access_token: str
-    token_expires_at: datetime
+class AgentAPIKeyCreated(AgentAPIKeyView):
+    api_key: str
 
 
 class AgentPrincipal(APIModel):

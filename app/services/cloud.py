@@ -5,9 +5,8 @@ from uuid import UUID
 
 from app.auth import AuthenticatedIdentity
 from app.models import (
-    AgentConnectionCreate,
-    AgentConnectionCreated,
-    AgentConnectionView,
+    AgentAPIKeyCreated,
+    AgentAPIKeyView,
     AgentAssetUpdate,
     AgentEntityCreateResponse,
     AgentEntityListResponse,
@@ -60,62 +59,32 @@ class CloudService:
         """
         return self._storage.delete_account_data(identity.uid)
 
-    def create_agent_connection(
+    def create_agent_api_key(
         self,
         identity: AuthenticatedIdentity,
-        request: AgentConnectionCreate,
         access: AgentAccessService,
-    ) -> AgentConnectionCreated:
+    ) -> AgentAPIKeyCreated:
         household_id = self._required_household(identity.uid)
         self._require_active_household(household_id)
-        return access.create_connection(household_id, identity.uid, request)
+        return access.create_api_key(household_id, identity.uid)
 
-    def list_agent_connections(
+    def agent_api_key(
         self,
         identity: AuthenticatedIdentity,
-    ) -> list[AgentConnectionView]:
+    ) -> AgentAPIKeyView | None:
         household_id = self._required_household(identity.uid)
         self._require_active_household(household_id)
-        return self._storage.list_agent_connections(household_id)
+        return self._storage.agent_api_key(household_id)
 
-    def revoke_agent_connection(
+    def revoke_agent_api_key(
         self,
         identity: AuthenticatedIdentity,
-        connection_id: UUID,
-    ) -> AgentConnectionView:
+    ) -> AgentAPIKeyView | None:
         household_id = self._required_household(identity.uid)
         self._require_active_household(household_id)
-        return self._storage.revoke_agent_connection(
+        return self._storage.revoke_agent_api_key(
             household_id,
             Actor(type=ActorType.user, id=identity.uid),
-            str(connection_id),
-        )
-
-    def pause_agent_connection(
-        self,
-        identity: AuthenticatedIdentity,
-        connection_id: UUID,
-    ) -> AgentConnectionView:
-        household_id = self._required_household(identity.uid)
-        self._require_active_household(household_id)
-        return self._storage.pause_agent_connection(
-            household_id,
-            Actor(type=ActorType.user, id=identity.uid),
-            str(connection_id),
-            datetime.now(UTC),
-        )
-
-    def resume_agent_connection(
-        self,
-        identity: AuthenticatedIdentity,
-        connection_id: UUID,
-    ) -> AgentConnectionView:
-        household_id = self._required_household(identity.uid)
-        self._require_active_household(household_id)
-        return self._storage.resume_agent_connection(
-            household_id,
-            Actor(type=ActorType.user, id=identity.uid),
-            str(connection_id),
             datetime.now(UTC),
         )
 

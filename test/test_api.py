@@ -81,10 +81,9 @@ class ApiContractTest(unittest.TestCase):
         self.assertIn("/api/v1/sync/pull", paths)
         self.assertIn("/api/v1/migrations", paths)
         self.assertIn("/api/v1/audit", paths)
-        self.assertIn("/api/v1/agent-connections", paths)
-        self.assertIn("/api/v1/agent-connections/{connection_id}/pause", paths)
-        self.assertIn("/api/v1/agent-connections/{connection_id}/resume", paths)
-        self.assertIn("/agent/v1/token/refresh", paths)
+        self.assertIn("/api/v1/agent-api-key", paths)
+        self.assertNotIn("/api/v1/agent-connections", paths)
+        self.assertNotIn("/agent/v1/token/refresh", paths)
         self.assertIn("/agent/v1/ledger/entries", paths)
         self.assertIn("/agent/v1/assets", paths)
         self.assertIn("/agent/v1/assets/{account_id}", paths)
@@ -92,10 +91,6 @@ class ApiContractTest(unittest.TestCase):
         self.assertIn("/agent/v1/channels", paths)
         identity_operation = paths["/api/v1/me"]["get"]
         self.assertEqual(identity_operation["security"], [{"HTTPBearer": []}])
-        self.assertEqual(
-            paths["/agent/v1/token/refresh"]["post"]["security"],
-            [{"AgentRefreshBearer": []}],
-        )
         self.assertEqual(
             paths["/agent/v1/assets"]["get"]["security"],
             [{"AgentBearer": []}],
@@ -112,7 +107,6 @@ class ApiContractTest(unittest.TestCase):
             if path.startswith("/agent/")
         }
         self.assertEqual(agent_methods, {
-            "/agent/v1/token/refresh": {"post"},
             "/agent/v1/ledger/entries": {"get", "post"},
             "/agent/v1/assets": {"get"},
             "/agent/v1/assets/{account_id}": {"patch"},
@@ -127,7 +121,7 @@ class ApiContractTest(unittest.TestCase):
                 "connection", "audit", "import",
             )
         ))
-        self.assertIn("AgentRefreshBearer", response.json()["components"]["securitySchemes"])
+        self.assertNotIn("AgentRefreshBearer", response.json()["components"]["securitySchemes"])
 
     def test_cloudkit_migration_source_is_rejected(self):
         storage = InMemoryHouseholdStorage()
@@ -422,16 +416,15 @@ class ApiContractTest(unittest.TestCase):
                 }]},
             )
             connection = self.client.post(
-                "/api/v1/agent-connections",
+                "/api/v1/agent-api-key",
                 headers=headers,
-                json={"name": "Blocked agent", "scopes": ["ledger:read"]},
             )
 
         self.assertEqual(sync.status_code, 409)
         self.assertEqual(connection.status_code, 409)
         self.assertEqual(sync.json(), {"detail": "Agent Cloud workspace is not active"})
 
-    def test_agent_connection_token_writes_while_owner_app_is_offline(self):
+    def test_agent_api_key_writes_while_owner_app_is_offline(self):
         storage = InMemoryHouseholdStorage()
         fastapi_app.dependency_overrides[cloud_service] = lambda: CloudService(storage)
         fastapi_app.dependency_overrides[agent_access_service] = lambda: AgentAccessService(storage)
@@ -446,20 +439,12 @@ class ApiContractTest(unittest.TestCase):
                 storage, "22222222-2222-2222-2222-222222222222"
             )
             connection = self.client.post(
-                "/api/v1/agent-connections",
+                "/api/v1/agent-api-key",
                 headers=owner_headers,
-                json={"name": "Synthetic agent", "scopes": ["ledger:create"]},
             )
         self.assertEqual(bootstrap.status_code, 200)
         self.assertEqual(connection.status_code, 200)
-        agent_token = connection.json()["accessToken"]
-        refresh_token = connection.json()["refreshToken"]
-        refreshed = self.client.post(
-            "/agent/v1/token/refresh",
-            headers={"Authorization": f"Bearer {refresh_token}"},
-        )
-        self.assertEqual(refreshed.status_code, 200)
-        agent_token = refreshed.json()["accessToken"]
+        agent_token = connection.json()["apiKey"]
         agent_write = self.client.post(
             "/agent/v1/ledger/entries",
             headers={"Authorization": f"Bearer {agent_token}"},
@@ -523,7 +508,10 @@ class ApiContractTest(unittest.TestCase):
                 headers=owner_headers,
             )
         self.assertEqual(agent_write.status_code, 200)
-        self.assertEqual(connection.json()["integration"], "api")
+        self.assertEqual(set(connection.json()["scopes"]), {
+            "ledger:read", "ledger:create", "assets:read", "assets:update",
+            "categories:read", "channels:read",
+        })
         self.assertFalse(agent_write.json()["replayed"])
         self.assertTrue(replay.json()["replayed"])
         self.assertEqual(owner_push.status_code, 200)
@@ -540,7 +528,7 @@ class ApiContractTest(unittest.TestCase):
             event for event in audit.json()["events"]
             if event["targetId"] == "33333333-3333-3333-3333-333333333333"
         )
-        self.assertEqual(agent_event["source"], "api")
+        self.assertEqual(agent_event["source"], "skill")
 
     def test_all_initial_agent_scopes_have_separate_enforced_routes(self):
         storage = InMemoryHouseholdStorage()
@@ -607,20 +595,11 @@ class ApiContractTest(unittest.TestCase):
                 ]},
             )
             connection = self.client.post(
-                "/api/v1/agent-connections",
+                "/api/v1/agent-api-key",
                 headers=owner_headers,
-                json={"name": "Full agent", "scopes": [
-                    "ledger:read", "ledger:create", "assets:read",
-                    "assets:update", "categories:read", "channels:read",
-                ]},
-            )
-            restricted = self.client.post(
-                "/api/v1/agent-connections",
-                headers=owner_headers,
-                json={"name": "Ledger only", "scopes": ["ledger:read"]},
             )
         self.assertEqual(seeded.status_code, 200)
-        token = connection.json()["accessToken"]
+        token = connection.json()["apiKey"]
         agent_headers = {"Authorization": f"Bearer {token}"}
 
         assets = self.client.get("/agent/v1/assets", headers=agent_headers)
@@ -639,10 +618,6 @@ class ApiContractTest(unittest.TestCase):
         snapshot_replay = self.client.patch(
             f"/agent/v1/assets/{account_id}", headers=agent_headers, json=snapshot_body
         )
-        denied = self.client.get(
-            "/agent/v1/assets",
-            headers={"Authorization": f"Bearer {restricted.json()['accessToken']}"},
-        )
         with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
             audit = self.client.get("/api/v1/audit?limit=100", headers=owner_headers)
 
@@ -656,15 +631,13 @@ class ApiContractTest(unittest.TestCase):
         self.assertEqual(snapshot.status_code, 200)
         self.assertFalse(snapshot.json()["replayed"])
         self.assertTrue(snapshot_replay.json()["replayed"])
-        self.assertEqual(denied.status_code, 403)
-        self.assertIn("insufficientScope", audit.text)
-        self.assertIn('"source":"api"', audit.text)
+        self.assertIn('"source":"skill"', audit.text)
         self.assertIn('"idempotencyKey":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"', audit.text)
         self.assertIn('"amountInFen":1000', audit.text)
         self.assertIn('"amountInFen":1200', audit.text)
         self.assertNotIn("must not enter audit", audit.text)
 
-    def test_owner_pause_resume_last_use_and_agent_rate_limit_contract(self):
+    def test_owner_reset_revoke_last_use_and_agent_rate_limit_contract(self):
         storage = InMemoryHouseholdStorage()
         service = CloudService(storage)
         access = AgentAccessService(storage, requests_per_minute=2)
@@ -685,43 +658,39 @@ class ApiContractTest(unittest.TestCase):
             )
             self.activate_empty_workspace(storage, device_id)
             created = self.client.post(
-                "/api/v1/agent-connections",
+                "/api/v1/agent-api-key",
                 headers=owner_headers,
-                json={"name": "Rate client", "scopes": ["ledger:read"]},
             )
-            connection_id = created.json()["connectionId"]
-            token = created.json()["accessToken"]
+            token = created.json()["apiKey"]
             agent_headers = {"Authorization": f"Bearer {token}"}
-            paused = self.client.post(
-                f"/api/v1/agent-connections/{connection_id}/pause",
-                headers=owner_headers,
-            )
-            paused_request = self.client.get(
-                "/agent/v1/ledger/entries", headers=agent_headers
-            )
-            resumed = self.client.post(
-                f"/api/v1/agent-connections/{connection_id}/resume",
-                headers=owner_headers,
-            )
             first = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
             second = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
             limited = self.client.get("/agent/v1/ledger/entries", headers=agent_headers)
-            connections = self.client.get(
-                "/api/v1/agent-connections", headers=owner_headers
+            metadata = self.client.get(
+                "/api/v1/agent-api-key", headers=owner_headers
+            )
+            reset = self.client.post("/api/v1/agent-api-key", headers=owner_headers)
+            old_key_request = self.client.get(
+                "/agent/v1/ledger/entries", headers=agent_headers
+            )
+            new_headers = {"Authorization": f"Bearer {reset.json()['apiKey']}"}
+            revoked = self.client.delete("/api/v1/agent-api-key", headers=owner_headers)
+            revoked_request = self.client.get(
+                "/agent/v1/ledger/entries", headers=new_headers
             )
             audit = self.client.get("/api/v1/audit?limit=100", headers=owner_headers)
 
         self.assertEqual(created.status_code, 200)
-        self.assertEqual(paused.json()["status"], "paused")
-        self.assertEqual(paused_request.status_code, 401)
-        self.assertEqual(resumed.json()["status"], "active")
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(limited.status_code, 429)
         self.assertEqual(limited.headers["retry-after"], "60")
-        self.assertIsNotNone(connections.json()[0]["lastUsedAt"])
-        self.assertIn('"action":"agent.pause"', audit.text)
-        self.assertIn('"action":"agent.resume"', audit.text)
+        self.assertIsNotNone(metadata.json()["lastUsedAt"])
+        self.assertEqual(old_key_request.status_code, 401)
+        self.assertEqual(revoked.json()["status"], "revoked")
+        self.assertEqual(revoked_request.status_code, 401)
+        self.assertIn('"action":"agent.api_key.reset"', audit.text)
+        self.assertIn('"action":"agent.api_key.revoke"', audit.text)
         self.assertIn('"action":"agent.rate_limit"', audit.text)
 
 

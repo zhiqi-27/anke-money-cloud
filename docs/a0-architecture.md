@@ -205,3 +205,26 @@ change is involved. Development synthetic partitions were already cleaned and no
 real Local migration had activated before this amendment, so no data backfill is
 required. Rollback before activation is the previous client mapping; after
 activation, rollback must retain read compatibility for the namespaced IDs.
+
+## Approved amendment · 2026-08-13 · Single full-capability Agent API Key
+
+This amendment supersedes A0-05's expiring, scoped grant, refresh credential,
+transport-bound integration, pause, and resume contract. Each active workspace has
+one long-lived API Key with all six frozen Agent capabilities. The same key is
+accepted by direct Agent HTTP and Remote MCP and remains valid until reset,
+revocation, account deletion, or workspace deletion. Plaintext is returned only on
+create/reset; storage retains a SHA-256 hash and display prefix. Reset and revoke
+take effect on the next request.
+
+The business capability boundary is unchanged: delete, ledger-history mutation,
+member/settings/migration/export/auth-management/audit-management operations,
+imports, and unconfirmed bulk changes remain unavailable to Agents. Existing
+idempotency, redacted audit, rate-limit, anomaly, and household isolation rules
+remain in force.
+
+The old owner connection endpoints and Agent refresh endpoint are removed rather
+than maintained as a compatibility window. Their token format is rejected
+immediately, and creating/resetting the new API Key deletes legacy credential
+documents while retaining append-only audit history. There is no financial-data or
+container migration. Rollback requires a new product amendment and a deliberate
+credential migration; old limited credentials must not silently become valid.

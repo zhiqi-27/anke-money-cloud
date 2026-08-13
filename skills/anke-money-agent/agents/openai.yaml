@@ -6,7 +6,7 @@ dependencies:
   tools:
     - type: "mcp"
       value: "anke-money"
-      description: "Scoped Anke Money ledger and asset tools"
+      description: "Six Anke Money ledger and asset tools"
       transport: "streamable_http"
       url: "https://func-anke-money-dev-zq01.azurewebsites.net/mcp"
 policy:

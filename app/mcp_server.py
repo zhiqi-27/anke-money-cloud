@@ -28,7 +28,7 @@ from app.services import (
 
 
 class AgentMCPTokenVerifier:
-    """Adapt revocable Anke connection tokens to MCP bearer authentication."""
+    """Adapt the revocable Anke API Key to MCP bearer authentication."""
 
     async def verify_token(self, token: str) -> AccessToken | None:
         from app.dependencies import get_household_storage

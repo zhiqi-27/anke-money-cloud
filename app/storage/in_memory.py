@@ -11,8 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from app.models import (
     Actor,
     ActorType,
-    AgentConnectionCreate,
-    AgentConnectionView,
+    AgentAPIKeyView,
     AgentPrincipal,
     AgentScope,
     OperationSource,
@@ -165,103 +164,71 @@ class InMemoryHouseholdStorage:
                 tombstone_payloads_purged += 1
         return RetentionResult(tombstone_payloads_purged, audit_events_deleted)
 
-    def create_agent_connection(
+    def replace_agent_api_key(
         self,
         household_id: str,
         actor: Actor,
-        request: AgentConnectionCreate,
         connection_id: str,
-        token_hash: str,
-        refresh_token_hash: str,
-        token_expires_at: datetime,
+        key_hash: str,
+        key_prefix: str,
         now: datetime,
-    ) -> AgentConnectionView:
-        grant_expires_at = now + timedelta(seconds=request.grant_duration_seconds or 0)
+    ) -> AgentAPIKeyView:
+        timestamp = self._timestamp(now)
         document = {
             "id": connection_id,
-            "entityType": "agentConnection",
+            "entityType": "agentAPIKey",
             "householdId": household_id,
-            "name": request.name,
-            "scopes": [scope.value for scope in request.scopes],
-            "integration": request.integration.value,
+            "scopes": [scope.value for scope in AgentScope],
+            "integration": OperationSource.skill.value,
             "status": "active",
-            "tokenHash": token_hash,
-            "refreshTokenHash": refresh_token_hash,
-            "tokenExpiresAt": token_expires_at.isoformat().replace("+00:00", "Z"),
-            "grantExpiresAt": grant_expires_at.isoformat().replace("+00:00", "Z"),
-            "createdAt": now.isoformat().replace("+00:00", "Z"),
-            "updatedAt": now.isoformat().replace("+00:00", "Z"),
+            "keyHash": key_hash,
+            "keyPrefix": key_prefix,
+            "createdAt": timestamp,
+            "updatedAt": timestamp,
         }
         with self._lock:
+            previous = self._items.get((household_id, connection_id))
+            legacy_keys = [
+                key for key, value in self._items.items()
+                if key[0] == household_id and value.get("entityType") == "agentConnection"
+            ]
+            for key in legacy_keys:
+                del self._items[key]
             self._items[(household_id, connection_id)] = document
-            self._record_authorization_audit(household_id, actor, document, "agent.grant", "accepted")
-        return self._connection_view(document)
+            action = "agent.api_key.reset" if previous is not None else "agent.api_key.create"
+            self._record_authorization_audit(
+                household_id, actor, document, action, "accepted"
+            )
+        return self._api_key_view(document)
 
-    def list_agent_connections(self, household_id: str) -> list[AgentConnectionView]:
+    def agent_api_key(self, household_id: str) -> AgentAPIKeyView | None:
         documents = [
             item for (partition, _), item in self._items.items()
-            if partition == household_id and item.get("entityType") == "agentConnection"
+            if partition == household_id
+            and item.get("entityType") == "agentAPIKey"
+            and item.get("status") == "active"
         ]
-        return [self._connection_view(item) for item in sorted(documents, key=lambda value: value["createdAt"], reverse=True)]
+        if not documents:
+            return None
+        return self._api_key_view(max(documents, key=lambda value: value["updatedAt"]))
 
-    def revoke_agent_connection(
+    def revoke_agent_api_key(
         self,
         household_id: str,
         actor: Actor,
-        connection_id: str,
-    ) -> AgentConnectionView:
+        now: datetime,
+    ) -> AgentAPIKeyView | None:
         with self._lock:
-            document = self._items.get((household_id, connection_id))
-            if document is None or document.get("entityType") != "agentConnection":
-                raise ValueError("Agent connection not found")
+            active = self.agent_api_key(household_id)
+            if active is None:
+                return None
+            document = self._items[(household_id, str(active.connection_id))]
             document["status"] = "revoked"
-            document["updatedAt"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            self._record_authorization_audit(household_id, actor, document, "agent.revoke", "accepted")
-            return self._connection_view(document)
-
-    def pause_agent_connection(
-        self,
-        household_id: str,
-        actor: Actor,
-        connection_id: str,
-        now: datetime,
-    ) -> AgentConnectionView:
-        with self._lock:
-            document = self._required_agent_connection(household_id, connection_id)
-            if document["status"] == "revoked":
-                raise ValueError("Revoked agent connection cannot be paused")
-            if document["status"] == "paused":
-                return self._connection_view(document)
-            document["status"] = "paused"
             document["updatedAt"] = self._timestamp(now)
             self._record_authorization_audit(
-                household_id, actor, document, "agent.pause", "accepted"
+                household_id, actor, document, "agent.api_key.revoke", "accepted"
             )
-            return self._connection_view(document)
-
-    def resume_agent_connection(
-        self,
-        household_id: str,
-        actor: Actor,
-        connection_id: str,
-        now: datetime,
-    ) -> AgentConnectionView:
-        with self._lock:
-            document = self._required_agent_connection(household_id, connection_id)
-            if document["status"] == "revoked":
-                raise ValueError("Revoked agent connection cannot be resumed")
-            if datetime.fromisoformat(
-                document["grantExpiresAt"].replace("Z", "+00:00")
-            ) <= now:
-                raise ValueError("Expired agent connection cannot be resumed")
-            if document["status"] == "active":
-                return self._connection_view(document)
-            document["status"] = "active"
-            document["updatedAt"] = self._timestamp(now)
-            self._record_authorization_audit(
-                household_id, actor, document, "agent.resume", "accepted"
-            )
-            return self._connection_view(document)
+            return self._api_key_view(document)
 
     def consume_agent_request(
         self,
@@ -272,7 +239,7 @@ class InMemoryHouseholdStorage:
         window_seconds: int,
     ) -> bool:
         with self._lock:
-            document = self._required_agent_connection(household_id, connection_id)
+            document = self._required_agent_api_key(household_id, connection_id)
             window_start = self._window_start(
                 document.get("requestWindowStartedAt"), now, window_seconds
             )
@@ -300,21 +267,17 @@ class InMemoryHouseholdStorage:
             document["lastUsedAt"] = self._timestamp(now)
             return True
 
-    def authenticate_agent_token(
+    def authenticate_agent_api_key(
         self,
         household_id: str,
         connection_id: str,
-        token_hash: str,
+        key_hash: str,
         now: datetime,
     ) -> AgentPrincipal | None:
         document = self._items.get((household_id, connection_id))
-        if document is None or document.get("entityType") != "agentConnection":
+        if document is None or document.get("entityType") != "agentAPIKey":
             return None
-        if document.get("status") != "active" or document.get("tokenHash") != token_hash:
-            return None
-        if datetime.fromisoformat(document["tokenExpiresAt"].replace("Z", "+00:00")) <= now:
-            return None
-        if datetime.fromisoformat(document["grantExpiresAt"].replace("Z", "+00:00")) <= now:
+        if document.get("status") != "active" or document.get("keyHash") != key_hash:
             return None
         return AgentPrincipal(
             household_id=UUID(household_id),
@@ -322,46 +285,6 @@ class InMemoryHouseholdStorage:
             scopes=[AgentScope(value) for value in document["scopes"]],
             integration=OperationSource(document.get("integration", "api")),
         )
-
-    def refresh_agent_token(
-        self,
-        household_id: str,
-        connection_id: str,
-        refresh_token_hash: str,
-        new_token_hash: str,
-        requested_expires_at: datetime,
-        now: datetime,
-    ) -> tuple[AgentPrincipal, datetime] | None:
-        with self._lock:
-            document = self._items.get((household_id, connection_id))
-            if document is None or document.get("entityType") != "agentConnection":
-                return None
-            grant_expires_at = datetime.fromisoformat(
-                document["grantExpiresAt"].replace("Z", "+00:00")
-            )
-            if (
-                document.get("status") != "active"
-                or document.get("refreshTokenHash") != refresh_token_hash
-                or grant_expires_at <= now
-            ):
-                return None
-            token_expires_at = min(requested_expires_at, grant_expires_at)
-            document["tokenHash"] = new_token_hash
-            document["tokenExpiresAt"] = token_expires_at.isoformat().replace("+00:00", "Z")
-            document["updatedAt"] = now.isoformat().replace("+00:00", "Z")
-            actor = Actor(type=ActorType.agent, id=connection_id)
-            self._record_authorization_audit(
-                household_id, actor, document, "agent.token.refresh", "accepted"
-            )
-            return (
-                AgentPrincipal(
-                    household_id=UUID(household_id),
-                    connection_id=UUID(connection_id),
-                    scopes=[AgentScope(value) for value in document["scopes"]],
-                    integration=OperationSource(document.get("integration", "api")),
-                ),
-                token_expires_at,
-            )
 
     def record_agent_auth_failure(
         self,
@@ -374,7 +297,7 @@ class InMemoryHouseholdStorage:
     ) -> None:
         with self._lock:
             document = self._items.get((household_id, connection_id))
-            if document is None or document.get("entityType") != "agentConnection":
+            if document is None or document.get("entityType") != "agentAPIKey":
                 return
             window_start = self._window_start(
                 document.get("failedAuthWindowStartedAt"), now, window_seconds
@@ -907,22 +830,20 @@ class InMemoryHouseholdStorage:
         self._items[(household_id, audit["id"])] = audit
 
     @staticmethod
-    def _connection_view(document: dict) -> AgentConnectionView:
-        return AgentConnectionView(
+    def _api_key_view(document: dict) -> AgentAPIKeyView:
+        return AgentAPIKeyView(
             connection_id=document["id"],
-            name=document["name"],
+            key_prefix=document["keyPrefix"],
             scopes=document["scopes"],
-            integration=document.get("integration", "api"),
             status=document["status"],
-            grant_expires_at=document["grantExpiresAt"],
             created_at=document["createdAt"],
             last_used_at=document.get("lastUsedAt"),
         )
 
-    def _required_agent_connection(self, household_id: str, connection_id: str) -> dict:
+    def _required_agent_api_key(self, household_id: str, connection_id: str) -> dict:
         document = self._items.get((household_id, connection_id))
-        if document is None or document.get("entityType") != "agentConnection":
-            raise ValueError("Agent connection not found")
+        if document is None or document.get("entityType") != "agentAPIKey":
+            raise ValueError("Agent API key not found")
         return document
 
     @staticmethod

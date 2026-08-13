@@ -6,15 +6,13 @@ Firebase credential, Cosmos credential, or household ID.
 
 ## Create the connection in Anke Money
 
-1. Open Agent authorization in the signed-in Anke Money app.
-2. Choose `Skill` as the immutable integration.
-3. Select only the scopes needed by the Agent and choose an expiry.
-4. Create the authorization and copy the one-time connection package.
+1. Open API Key management in the signed-in Anke Money app.
+2. Create the workspace's API Key.
+3. Copy the API Key when it is shown.
 
-The package for a Skill connection contains `mcpUrl`, short-lived
-`accessToken`, token expiry, `refreshToken`, and grant expiry. It intentionally
-does not contain an API base URL because Skill credentials are accepted only by
-Remote MCP.
+The API Key grants the six fixed Anke Skill capabilities and remains valid until
+the owner resets or revokes it. The service stores only a hash and a display
+prefix; plaintext is returned only after creation or reset.
 
 ## Install in an Agent host
 
@@ -25,13 +23,10 @@ HTTP MCP dependency.
 
 Configure that MCP connection with:
 
-- URL: the copied `mcpUrl`;
-- authorization: `Bearer <accessToken>` in the host's protected credential
-  store;
-- refresh credential: store `refreshToken` only if the host supports the Anke
-  token-refresh flow.
+- URL: the Skill's declared MCP URL;
+- authorization: `Bearer <apiKey>` in the host's protected credential store.
 
-Never paste either token into `SKILL.md`, `openai.yaml`, a prompt template, a
+Never paste the API Key into `SKILL.md`, `openai.yaml`, a prompt template, a
 shell command, logs, or source control. If the host cannot protect a bearer
 credential, do not connect it.
 
@@ -41,7 +36,6 @@ Invoke `$anke-money-agent` or make a matching money request. Reads use the
 granted scopes. The Skill must show the exact proposed ledger or asset change and
 obtain explicit confirmation immediately before a write.
 
-The owner can revoke the connection in Anke Money at any time. Revocation is
-checked on the next MCP request. Changing scopes or switching between API, MCP,
-and Skill requires a new connection; an existing grant is never widened or
-relabelled.
+The owner can reset or revoke the API Key in Anke Money at any time. Either
+change is checked on the next MCP request. Resetting immediately invalidates the
+previous Key.

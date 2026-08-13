@@ -1,14 +1,14 @@
 ---
 name: anke-money-agent
-description: Safely work with one user-authorized Anke Money household through its Remote MCP tools. Use when a user asks to read ledger entries, assets, categories, or payment channels, create one ledger entry, or update one asset balance. Enforces exact granted scopes, confirmation before writes, stable idempotency keys, and narrow non-destructive operations.
+description: Safely work with one user-authorized Anke Money household through its Remote MCP tools. Use when a user asks to read ledger entries, assets, categories, or payment channels, create one ledger entry, or update one asset balance. Enforces confirmation before writes, stable idempotency keys, and narrow non-destructive operations.
 ---
 
 # Anke Money Agent
 
 Use the connected Anke Money MCP server as the only data path. The connection
-already binds one identity, one household, an expiry, and an exact set of scopes.
-Use a connection created with the `Skill` integration; API and general MCP
-credentials are intentionally not interchangeable with it.
+uses the owner's long-lived Anke Money API Key, which binds one identity and one
+household and enables all six Agent capabilities. It remains valid until the owner
+resets or revokes it.
 
 ## Workflow
 
@@ -26,7 +26,7 @@ credentials are intentionally not interchangeable with it.
 
 ## Safety boundaries
 
-- Use only tools and scopes granted by the active connection.
+- Use only the six tools exposed by the active connection.
 - Never request, infer, or switch to another household.
 - Never permanently delete, change authorization, import bank or payment
   statements, or perform an unconfirmed bulk asset update.
@@ -35,8 +35,8 @@ credentials are intentionally not interchangeable with it.
 - Keep money in integer fen. Reject floating-point currency values.
 - Do not put credentials, access tokens, private notes, or unrelated record
   payloads into prompts, summaries, or logs.
-- If a scope is missing or a connection is expired or revoked, stop and ask the
-  user to create or refresh the connection in Anke Money. Never work around it.
+- If the API Key is invalid or revoked, stop and ask the user to create or reset it
+  in Anke Money. Never work around it.
 
 Load [capabilities.md](references/capabilities.md) when choosing a tool or
 constructing its arguments.

@@ -7,32 +7,25 @@ verifies signature, issuer, audience/project, expiry, and revocation policy thro
 Firebase Admin. It extracts the verified `uid`; it never accepts a UID in a header
 or body as proof of identity.
 
-Firebase establishes identity only. Household membership, roles, scopes, device
-status, agent grants, and resource ownership are server-side authorization checks.
+Firebase establishes identity only. Household membership, roles, device status,
+Agent API Key state, and resource ownership are server-side authorization checks.
 
 ## Authorization
 
 - Every household request resolves active membership before storage access.
 - Every storage point operation includes the resolved `householdId` partition key.
-- Agent read and write scopes are separate, visible, expiring, and revocable. The
-  only A2 scopes are `ledger:read`, `ledger:create`, `assets:read`,
+- The single workspace Agent API Key always has the fixed capabilities
+  `ledger:read`, `ledger:create`, `assets:read`,
   `assets:update`, `categories:read`, and `channels:read`.
 - Revocation must be enforced on the next request, not only at token issuance.
 - Internal smoke tooling is never an end-user API and cannot run in Production.
 
-Read-only grants default to 24 hours and are capped at 7 days. A grant containing
-either write scope defaults to 1 hour and is capped at 24 hours. Access tokens are
-capped at 15 minutes and cannot refresh past the parent grant. Ledger history
-updates, permanent delete, member management, settings, migration, export,
-authorization management, and audit-log scopes are not issued in A2. Asset update
-is limited to one appended snapshot. Remote MCP verifies the same revocable
-connection credential on every request and never receives a client-selected
-household ID.
-
-Each connection is bound at creation to `api`, `mcp`, or `skill`. Agent HTTP
-routes accept only API-bound tokens; Remote MCP accepts only MCP- or Skill-bound
-tokens. The persisted write source comes from this server-loaded connection,
-never from a write body or MCP tool argument.
+The key does not expire and has no refresh credential. It stays valid until reset,
+revocation, or workspace deletion. Ledger history updates, permanent delete,
+member management, settings, migration, export, authorization management, and
+audit-log operations remain outside the Agent surface. Asset update is limited to
+one appended snapshot. Direct Agent HTTP and Remote MCP verify the same revocable
+key on every request and never receive a client-selected household ID or source.
 
 Remote MCP prefers the stateless `2026-07-28` wire protocol and temporarily
 accepts `2025-11-25` clients at the same endpoint. Protocol negotiation cannot
@@ -40,12 +33,13 @@ change credentials, scopes, household selection, rate limits, idempotency, tool
 arguments, or audit behavior. The compatibility path owns no separate service or
 storage implementation.
 
-The owner may pause or resume an unexpired connection without changing its scopes,
-integration, tokens, or expiry; revoked connections cannot resume. Every accepted
-Agent request consumes the connection's shared 120-request, 60-second window.
+The owner may reset or revoke the key. Reset replaces the stored hash and
+immediately invalidates the old plaintext; revocation cannot be resumed. Every
+accepted Agent request consumes the key identity's shared 120-request, 60-second window.
 Requests over the limit are rejected and audited. Five invalid-token attempts that
-name a known connection within five minutes create one deduplicated anomaly audit
-event. Invalid attempts never mutate scopes or permanently lock the valid grant.
+name the known key identity within five minutes create one deduplicated anomaly
+audit event. Invalid attempts never widen capabilities or permanently lock the
+valid key.
 
 ## Secrets
 
@@ -59,7 +53,7 @@ Never commit or log:
 - Cosmos account keys or connection strings
 - Firebase service-account JSON or private keys
 - Firebase ID tokens, refresh tokens, or decoded full claims
-- Agent bearer/refresh tokens
+- Agent API Keys or their plaintext
 - Apple private keys
 - raw financial notes or complete financial documents
 

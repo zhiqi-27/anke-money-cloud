@@ -99,23 +99,20 @@ source, action, target type/ID, outcome, revisions, idempotency key, and a redac
 difference summary.
 It must not store authorization tokens, full notes, or whole before/after documents.
 
-### Agent authorization
+### Agent API Key
 
-`agentConnection` stores connection identity and lifecycle. `authorizationGrant`
-stores only the frozen scopes (`ledger:read`, `ledger:create`, `assets:read`,
-`assets:update`, `categories:read`, and `channels:read`), expiry, revocation, and
-connection reference. It also stores one immutable integration (`api`, `mcp`, or
-`skill`) used by the server as the trusted operation source. Read-only grants
-default to 24 hours and are capped at 7
-days; grants containing a create scope default to 1 hour and are capped at 24
-hours. Access tokens are capped at 15 minutes and cannot outlive the grant. Tokens
-are stored only as hashes or encrypted references; raw bearer tokens are never
-persisted.
+`agentAPIKey` is the single credential document for a workspace. Its deterministic
+connection identity binds the owner and household, and its fixed capabilities are
+`ledger:read`, `ledger:create`, `assets:read`, `assets:update`, `categories:read`,
+and `channels:read`. The document stores only a SHA-256 key hash and display prefix;
+plaintext is returned only by create/reset and is never persisted. It has no expiry
+or refresh credential. Reset replaces the hash, revocation changes lifecycle state,
+and either action is enforced on the next request.
 
-Additive lifecycle metadata includes nullable `lastUsedAt`, a 60-second request
-window start/count, and a five-minute failed-auth window start/count plus the last
-deduplicated anomaly threshold. Pause/resume update only lifecycle status and
-`updatedAt`; they never change scopes, integration, tokens, or `grantExpiresAt`.
+Lifecycle metadata includes nullable `lastUsedAt`, a 60-second request window
+start/count, and a five-minute failed-auth window start/count plus the last
+deduplicated anomaly threshold. Creating or resetting the API Key also removes any
+legacy `agentConnection` credential documents in that household partition.
 Rate-limit and suspicious-authentication events are ordinary append-only redacted
 audit documents in the same household partition.
 

@@ -9,14 +9,12 @@ from app.auth import AuthenticatedIdentity
 from app.main import fastapi_app
 from app.models import (
     AgentAssetUpdate,
-    AgentConnectionCreate,
     AgentLedgerEntryCreate,
     AgentScope,
     DeviceRegistration,
     MigrationManifest,
     MigrationSourceMode,
     MigrationUploadRequest,
-    OperationSource,
 )
 from app.services import (
     AgentAccessService,
@@ -58,64 +56,33 @@ class AgentSecurityTest(unittest.TestCase):
         )
         self.cloud.activate_migration(self.identity, session_id, digest)
 
-    def test_pause_resume_and_revoke_preserve_the_original_grant(self):
+    def test_reset_and_revoke_invalidate_the_previous_api_key(self):
         access = AgentAccessService(self.storage)
-        created = self.cloud.create_agent_connection(
-            self.identity,
-            AgentConnectionCreate(
-                name="Paused API client",
-                scopes=[AgentScope.ledger_read, AgentScope.categories_read],
-                integration=OperationSource.api,
-                grant_duration_seconds=24 * 60 * 60,
-            ),
-            access,
-        )
-        original = created.model_dump()
+        created = self.cloud.create_agent_api_key(self.identity, access)
+        reset = self.cloud.create_agent_api_key(self.identity, access)
 
-        paused = self.cloud.pause_agent_connection(
-            self.identity, created.connection_id
-        )
-        self.assertEqual(paused.status, "paused")
-        self.assertEqual(paused.scopes, original["scopes"])
-        self.assertEqual(paused.integration, original["integration"])
-        self.assertEqual(paused.grant_expires_at, original["grant_expires_at"])
         with self.assertRaises(InvalidAgentTokenError):
-            access.authenticate(created.access_token)
+            access.authenticate(created.api_key)
+        self.assertEqual(access.authenticate(reset.api_key).scopes, list(AgentScope))
+
+        self.cloud.revoke_agent_api_key(self.identity)
         with self.assertRaises(InvalidAgentTokenError):
-            access.refresh(created.refresh_token)
-
-        resumed = self.cloud.resume_agent_connection(
-            self.identity, created.connection_id
-        )
-        principal = access.authenticate(created.access_token)
-        self.assertEqual(resumed.status, "active")
-        self.assertEqual(principal.scopes, original["scopes"])
-        visible = self.cloud.list_agent_connections(self.identity)[0]
-        self.assertIsNotNone(visible.last_used_at)
-
-        self.cloud.revoke_agent_connection(self.identity, created.connection_id)
-        with self.assertRaisesRegex(ValueError, "cannot be resumed"):
-            self.cloud.resume_agent_connection(self.identity, created.connection_id)
+            access.authenticate(reset.api_key)
         actions = {item.action for item in self.cloud.audit(self.identity, None, 100).events}
-        self.assertTrue({"agent.pause", "agent.resume", "agent.revoke"}.issubset(actions))
+        self.assertTrue({
+            "agent.api_key.create", "agent.api_key.reset", "agent.api_key.revoke"
+        }.issubset(actions))
 
     def test_rate_limit_is_shared_per_connection_and_audited_once_per_window(self):
         access = AgentAccessService(self.storage, requests_per_minute=2)
-        created = self.cloud.create_agent_connection(
-            self.identity,
-            AgentConnectionCreate(
-                name="Busy client",
-                scopes=[AgentScope.ledger_read],
-            ),
-            access,
-        )
+        created = self.cloud.create_agent_api_key(self.identity, access)
 
-        access.authenticate(created.access_token)
-        access.authenticate(created.access_token)
+        access.authenticate(created.api_key)
+        access.authenticate(created.api_key)
         with self.assertRaises(AgentRateLimitExceededError):
-            access.authenticate(created.access_token)
+            access.authenticate(created.api_key)
         with self.assertRaises(AgentRateLimitExceededError):
-            access.authenticate(created.access_token)
+            access.authenticate(created.api_key)
 
         events = self.cloud.audit(self.identity, None, 100).events
         rate_events = [item for item in events if item.action == "agent.rate_limit"]
@@ -125,17 +92,9 @@ class AgentSecurityTest(unittest.TestCase):
 
     def test_repeated_invalid_known_connection_tokens_raise_one_anomaly_without_lockout(self):
         access = AgentAccessService(self.storage, failed_auth_threshold=5)
-        created = self.cloud.create_agent_connection(
-            self.identity,
-            AgentConnectionCreate(
-                name="Observed client",
-                scopes=[AgentScope.ledger_read],
-                integration=OperationSource.api,
-            ),
-            access,
-        )
-        prefix = created.access_token.rsplit(".", maxsplit=1)[0]
-        forged = f"{prefix}.forged"
+        created = self.cloud.create_agent_api_key(self.identity, access)
+        prefix = created.api_key.rsplit("_", maxsplit=1)[0]
+        forged = f"{prefix}_forged"
 
         for _ in range(6):
             with self.assertRaises(InvalidAgentTokenError):
@@ -147,7 +106,7 @@ class AgentSecurityTest(unittest.TestCase):
         ]
         self.assertEqual(len(anomalies), 1)
         self.assertEqual(anomalies[0].reason, "repeatedInvalidToken")
-        self.assertEqual(access.authenticate(created.access_token).connection_id, created.connection_id)
+        self.assertEqual(access.authenticate(created.api_key).connection_id, created.connection_id)
 
     def test_malicious_money_and_date_parameters_are_rejected(self):
         ledger = {

@@ -14,17 +14,14 @@ from app.auth import AuthenticatedIdentity
 from app.config import get_settings
 from app.dependencies import (
     agent_access_service,
-    agent_refresh_token,
     cloud_service,
     current_agent,
     current_identity,
 )
 from app.models import (
-    AgentAccessToken,
+    AgentAPIKeyCreated,
+    AgentAPIKeyView,
     AgentAssetUpdate,
-    AgentConnectionCreate,
-    AgentConnectionCreated,
-    AgentConnectionView,
     AgentLedgerCreateResponse,
     AgentLedgerEntryCreate,
     AgentEntityCreateResponse,
@@ -43,7 +40,6 @@ from app.models import (
 from app.services import (
     AgentAccessService,
     CloudService,
-    InvalidAgentTokenError,
     WorkspaceNotActiveError,
 )
 from app.services.cloud import MembershipRequiredError
@@ -188,113 +184,52 @@ async def bootstrap(
 
 
 @fastapi_app.post(
-    "/api/v1/agent-connections",
+    "/api/v1/agent-api-key",
     tags=["agent authorization"],
-    response_model=AgentConnectionCreated,
-    summary="Create a scoped, expiring agent connection",
+    response_model=AgentAPIKeyCreated,
+    summary="Create or reset the full-capability Skill API key",
 )
-async def create_agent_connection(
-    request: AgentConnectionCreate,
+async def create_agent_api_key(
     identity: AuthenticatedIdentity = Depends(current_identity),
     service: CloudService = Depends(cloud_service),
     access: AgentAccessService = Depends(agent_access_service),
-) -> AgentConnectionCreated:
+) -> AgentAPIKeyCreated:
     try:
-        return service.create_agent_connection(identity, request, access)
+        return service.create_agent_api_key(identity, access)
     except MembershipRequiredError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
 
 
 @fastapi_app.get(
-    "/api/v1/agent-connections",
+    "/api/v1/agent-api-key",
     tags=["agent authorization"],
-    response_model=list[AgentConnectionView],
-    summary="List visible agent connections",
+    response_model=AgentAPIKeyView | None,
+    summary="Return the active Skill API key metadata",
 )
-async def list_agent_connections(
+async def agent_api_key(
     identity: AuthenticatedIdentity = Depends(current_identity),
     service: CloudService = Depends(cloud_service),
-) -> list[AgentConnectionView]:
+) -> AgentAPIKeyView | None:
     try:
-        return service.list_agent_connections(identity)
+        return service.agent_api_key(identity)
     except MembershipRequiredError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
 
 
 @fastapi_app.delete(
-    "/api/v1/agent-connections/{connection_id}",
+    "/api/v1/agent-api-key",
     tags=["agent authorization"],
-    response_model=AgentConnectionView,
-    summary="Revoke an agent connection immediately",
+    response_model=AgentAPIKeyView | None,
+    summary="Revoke the active Skill API key immediately",
 )
-async def revoke_agent_connection(
-    connection_id: UUID,
+async def revoke_agent_api_key(
     identity: AuthenticatedIdentity = Depends(current_identity),
     service: CloudService = Depends(cloud_service),
-) -> AgentConnectionView:
+) -> AgentAPIKeyView | None:
     try:
-        return service.revoke_agent_connection(identity, connection_id)
+        return service.revoke_agent_api_key(identity)
     except MembershipRequiredError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent connection not found") from exc
-
-
-@fastapi_app.post(
-    "/api/v1/agent-connections/{connection_id}/pause",
-    tags=["agent authorization"],
-    response_model=AgentConnectionView,
-    summary="Pause an agent connection without changing its grant",
-)
-async def pause_agent_connection(
-    connection_id: UUID,
-    identity: AuthenticatedIdentity = Depends(current_identity),
-    service: CloudService = Depends(cloud_service),
-) -> AgentConnectionView:
-    try:
-        return service.pause_agent_connection(identity, connection_id)
-    except MembershipRequiredError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-
-@fastapi_app.post(
-    "/api/v1/agent-connections/{connection_id}/resume",
-    tags=["agent authorization"],
-    response_model=AgentConnectionView,
-    summary="Resume the same unexpired agent grant",
-)
-async def resume_agent_connection(
-    connection_id: UUID,
-    identity: AuthenticatedIdentity = Depends(current_identity),
-    service: CloudService = Depends(cloud_service),
-) -> AgentConnectionView:
-    try:
-        return service.resume_agent_connection(identity, connection_id)
-    except MembershipRequiredError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-
-@fastapi_app.post(
-    "/agent/v1/token/refresh",
-    tags=["agent authorization"],
-    response_model=AgentAccessToken,
-    summary="Refresh a short-lived access token within its parent grant",
-)
-async def refresh_agent_token(
-    refresh_token: str = Depends(agent_refresh_token),
-    access: AgentAccessService = Depends(agent_access_service),
-) -> AgentAccessToken:
-    try:
-        return access.refresh(refresh_token)
-    except InvalidAgentTokenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired agent refresh token",
-        ) from exc
 
 
 @fastapi_app.post(

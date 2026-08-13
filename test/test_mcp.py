@@ -12,13 +12,10 @@ from mcp.types import Implementation
 from app.auth import AuthenticatedIdentity
 from app.main import fastapi_app
 from app.models import (
-    AgentConnectionCreate,
-    AgentScope,
     DeviceRegistration,
     MigrationManifest,
     MigrationSourceMode,
     MigrationUploadRequest,
-    OperationSource,
 )
 from app.services import AgentAccessService, CloudService
 from app.storage.in_memory import InMemoryHouseholdStorage
@@ -57,28 +54,9 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         self.cloud.activate_migration(self.identity, session_id, digest)
 
     async def test_streamable_http_exposes_only_six_tools_and_audits_idempotent_write(self):
-        api_connection = self.cloud.create_agent_connection(
-            self.identity,
-            AgentConnectionCreate(
-                name="Versioned HTTP API client",
-                scopes=[AgentScope.ledger_create],
-                integration=OperationSource.api,
-            ),
-            self.access,
-        )
-        connection = self.cloud.create_agent_connection(
-            self.identity,
-            AgentConnectionCreate(
-                name="Skill test",
-                scopes=list(AgentScope),
-                integration=OperationSource.skill,
-            ),
-            self.access,
-        )
+        connection = self.cloud.create_agent_api_key(self.identity, self.access)
         entry_id = str(uuid4())
         idempotency_key = str(uuid4())
-        api_entry_id = str(uuid4())
-        api_idempotency_key = str(uuid4())
         arguments = {
             "id": entry_id,
             "idempotency_key": idempotency_key,
@@ -102,25 +80,6 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         with patch("app.dependencies.get_household_storage", return_value=self.storage):
             async with fastapi_app.router.lifespan_context(fastapi_app):
                 transport = httpx2.ASGITransport(app=fastapi_app)
-                async with httpx2.AsyncClient(
-                    transport=transport,
-                    base_url="http://testserver",
-                    headers={"Authorization": f"Bearer {api_connection.access_token}"},
-                ) as api_client:
-                    api_write = await api_client.post(
-                        "/agent/v1/ledger/entries",
-                        json={
-                            "id": api_entry_id,
-                            "idempotencyKey": api_idempotency_key,
-                            "kind": "transaction",
-                            "direction": "expense",
-                            "occurredAt": "2026-08-06T00:30:00Z",
-                            "monthStart": "2026-08-01",
-                            "channelId": "cash",
-                            "categoryId": "grocery",
-                            "amountInFen": 1_200,
-                        },
-                    )
                 async with httpx2.AsyncClient(
                     transport=transport,
                     base_url="http://testserver",
@@ -154,37 +113,7 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
                 async with httpx2.AsyncClient(
                     transport=transport,
                     base_url="http://testserver",
-                    headers={"Authorization": f"Bearer {api_connection.access_token}"},
-                ) as wrong_integration_client:
-                    wrong_integration = await wrong_integration_client.post(
-                        "/mcp",
-                        headers={
-                            "MCP-Protocol-Version": "2026-07-28",
-                            "Mcp-Method": "tools/list",
-                            "Accept": "application/json, text/event-stream",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "jsonrpc": "2.0",
-                            "id": 2,
-                            "method": "tools/list",
-                            "params": {
-                                "_meta": {
-                                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-                                    "io.modelcontextprotocol/clientCapabilities": {},
-                                    "io.modelcontextprotocol/clientInfo": {
-                                        "name": "api-token",
-                                        "version": "1",
-                                    },
-                                },
-                            },
-                        },
-                    )
-                self.assertEqual(wrong_integration.status_code, 401)
-                async with httpx2.AsyncClient(
-                    transport=transport,
-                    base_url="http://testserver",
-                    headers={"Authorization": f"Bearer {connection.access_token}"},
+                    headers={"Authorization": f"Bearer {connection.api_key}"},
                 ) as http_client:
                     legacy_transport = streamable_http_client(
                         "http://testserver/mcp", http_client=http_client
@@ -216,7 +145,6 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(first.is_error)
         self.assertFalse(replay.is_error)
-        self.assertEqual(api_write.status_code, 200)
         first_payload = json.loads(first.content[0].text)
         replay_payload = json.loads(replay.content[0].text)
         self.assertFalse(first_payload["replayed"])
@@ -228,14 +156,8 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.source, "skill")
         self.assertEqual(event.idempotency_key, idempotency_key)
         self.assertEqual(event.change_summary["after"]["amountInFen"], 8_800)
-        api_event = next(item for item in audit.events if item.target_id == api_entry_id)
-        self.assertEqual(api_event.source, "api")
-        self.assertEqual(api_event.actor_id, str(api_connection.connection_id))
-        self.assertEqual(api_event.scope, "ledger:create")
         pulled = self.cloud.pull(self.identity, None, 100)
-        self.assertTrue({api_entry_id, entry_id}.issubset(
-            {item.entity_id for item in pulled.changes}
-        ))
+        self.assertIn(entry_id, {item.entity_id for item in pulled.changes})
 
 
 if __name__ == "__main__":

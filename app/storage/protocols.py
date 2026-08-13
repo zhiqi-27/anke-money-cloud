@@ -5,8 +5,7 @@ from datetime import datetime
 from typing import Protocol
 
 from app.models import (
-    AgentConnectionCreate,
-    AgentConnectionView,
+    AgentAPIKeyView,
     AgentPrincipal,
     Actor,
     AuditEventView,
@@ -39,45 +38,27 @@ class HouseholdStorage(Protocol):
 
     def delete_account_data(self, uid: str) -> int: ...
 
-    def create_agent_connection(
-        self,
-        household_id: str,
-        actor: Actor,
-        request: AgentConnectionCreate,
-        connection_id: str,
-        token_hash: str,
-        refresh_token_hash: str,
-        token_expires_at,
-        now,
-    ) -> AgentConnectionView: ...
-
-    def list_agent_connections(
-        self,
-        household_id: str,
-    ) -> list[AgentConnectionView]: ...
-
-    def revoke_agent_connection(
+    def replace_agent_api_key(
         self,
         household_id: str,
         actor: Actor,
         connection_id: str,
-    ) -> AgentConnectionView: ...
-
-    def pause_agent_connection(
-        self,
-        household_id: str,
-        actor: Actor,
-        connection_id: str,
+        key_hash: str,
+        key_prefix: str,
         now: datetime,
-    ) -> AgentConnectionView: ...
+    ) -> AgentAPIKeyView: ...
 
-    def resume_agent_connection(
+    def agent_api_key(
+        self,
+        household_id: str,
+    ) -> AgentAPIKeyView | None: ...
+
+    def revoke_agent_api_key(
         self,
         household_id: str,
         actor: Actor,
-        connection_id: str,
         now: datetime,
-    ) -> AgentConnectionView: ...
+    ) -> AgentAPIKeyView | None: ...
 
     def consume_agent_request(
         self,
@@ -88,23 +69,13 @@ class HouseholdStorage(Protocol):
         window_seconds: int,
     ) -> bool: ...
 
-    def authenticate_agent_token(
+    def authenticate_agent_api_key(
         self,
         household_id: str,
         connection_id: str,
-        token_hash: str,
+        key_hash: str,
         now,
     ) -> AgentPrincipal | None: ...
-
-    def refresh_agent_token(
-        self,
-        household_id: str,
-        connection_id: str,
-        refresh_token_hash: str,
-        new_token_hash: str,
-        requested_expires_at,
-        now,
-    ) -> tuple[AgentPrincipal, datetime] | None: ...
 
     def record_agent_auth_failure(
         self,

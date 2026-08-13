@@ -9,7 +9,6 @@ from app.config import ConfigurationError, Settings
 from app.models import (
     Actor,
     ActorType,
-    AgentConnectionCreate,
     AgentScope,
     DeviceRegistration,
     EntryKind,
@@ -81,6 +80,9 @@ class FakeCosmosContainer:
                 document = args[0]
             elif operation == "replace":
                 document = args[1]
+            elif operation == "delete":
+                self.items.pop((partition_key, args[0]), None)
+                continue
             else:
                 raise AssertionError(f"Unexpected operation: {operation}")
             self.items[(partition_key, document["id"])] = document
@@ -482,7 +484,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         self.assertEqual(stable_cursor, second_cursor)
         self.assertFalse(empty_has_more)
 
-    def test_agent_connection_hashes_refresh_token_and_rotates_access_in_batch(self):
+    def test_agent_api_key_hashes_plaintext_and_resets_in_batch(self):
         entities = FakeCosmosContainer()
         identities = FakeIdentityContainer()
         storage = CosmosHouseholdStorage(
@@ -498,19 +500,17 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         household = entities.items[(str(bootstrap.household_id), str(bootstrap.household_id))]
         household["status"] = "active"
 
-        connection = cloud.create_agent_connection(
-            identity,
-            AgentConnectionCreate(name="Read agent", scopes=[AgentScope.ledger_read]),
-            access,
-        )
+        connection = cloud.create_agent_api_key(identity, access)
         stored = storage.read_household_document(
             str(bootstrap.household_id), str(connection.connection_id)
         )
-        refreshed = access.refresh(connection.refresh_token)
+        reset = cloud.create_agent_api_key(identity, access)
 
-        self.assertNotEqual(stored["tokenHash"], connection.access_token)
-        self.assertNotEqual(stored["refreshTokenHash"], connection.refresh_token)
-        self.assertNotEqual(refreshed.access_token, connection.access_token)
+        self.assertNotEqual(stored["keyHash"], connection.api_key)
+        self.assertNotIn("apiKey", stored)
+        self.assertNotEqual(reset.api_key, connection.api_key)
+        with self.assertRaises(InvalidAgentTokenError):
+            access.authenticate(connection.api_key)
         operations, _ = entities.batch_calls[-1]
         self.assertEqual([item[0] for item in operations], ["replace", "create"])
 
@@ -533,26 +533,21 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         household_id = str(bootstrap.household_id)
         entities.items[(household_id, household_id)]["status"] = "active"
-        created = cloud.create_agent_connection(
-            identity,
-            AgentConnectionCreate(name="Cosmos client", scopes=[AgentScope.ledger_read]),
-            access,
-        )
+        created = cloud.create_agent_api_key(identity, access)
 
-        paused = cloud.pause_agent_connection(identity, created.connection_id)
-        resumed = cloud.resume_agent_connection(identity, created.connection_id)
-        self.assertEqual(paused.status, "paused")
-        self.assertEqual(resumed.status, "active")
-        self.assertEqual(paused.scopes, resumed.scopes)
-        self.assertEqual(paused.grant_expires_at, resumed.grant_expires_at)
-
-        access.authenticate(created.access_token)
+        access.authenticate(created.api_key)
         with self.assertRaises(AgentRateLimitExceededError):
-            access.authenticate(created.access_token)
-        forged = created.access_token.rsplit(".", 1)[0] + ".forged"
+            access.authenticate(created.api_key)
+        forged = created.api_key.rsplit("_", 1)[0] + "_forged"
         for _ in range(3):
             with self.assertRaises(InvalidAgentTokenError):
                 access.authenticate(forged)
+
+        reset = cloud.create_agent_api_key(identity, access)
+        access.authenticate(reset.api_key)
+        cloud.revoke_agent_api_key(identity)
+        with self.assertRaises(InvalidAgentTokenError):
+            access.authenticate(reset.api_key)
 
         connection = storage.read_household_document(
             household_id, str(created.connection_id)
@@ -564,8 +559,8 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         ]
         actions = {item["action"] for item in audits}
         self.assertTrue({
-            "agent.pause",
-            "agent.resume",
+            "agent.api_key.reset",
+            "agent.api_key.revoke",
             "agent.rate_limit",
             "agent.authentication.anomaly",
         }.issubset(actions))
@@ -587,14 +582,10 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         household_id = str(bootstrap.household_id)
         entities.items[(household_id, household_id)]["status"] = "active"
-        created = cloud.create_agent_connection(
-            identity,
-            AgentConnectionCreate(name="Concurrent client", scopes=[AgentScope.ledger_read]),
-            access,
-        )
+        created = cloud.create_agent_api_key(identity, access)
 
         entities.fail_next_batch = True
-        principal = access.authenticate(created.access_token)
+        principal = access.authenticate(created.api_key)
 
         self.assertEqual(principal.connection_id, created.connection_id)
         self.assertEqual(entities.precondition_attempts, 1)

@@ -59,13 +59,11 @@ Azure Functions locally. Do not populate or commit the example.
   deletion flow
 - `POST /api/v1/migrations` — stages a verified Local snapshot
 - `POST /api/v1/migrations/activate` — atomically activates a staged manifest
-- `POST /api/v1/agent-connections` — creates a scoped owner-authorized Agent
-  connection and returns its short-lived access token once
-- `GET /api/v1/agent-connections` — lists owner-visible Agent connections
-- `DELETE /api/v1/agent-connections/{connection_id}` — immediately revokes a
-  connection and its outstanding token
-- `POST /agent/v1/token/refresh` — rotates the short-lived access token while
-  the parent grant remains active
+- `GET /api/v1/agent-api-key` — returns the active workspace API Key metadata,
+  never its plaintext
+- `POST /api/v1/agent-api-key` — creates or resets the single workspace API Key
+  and returns its plaintext once
+- `DELETE /api/v1/agent-api-key` — immediately revokes the workspace API Key
 - `GET /agent/v1/ledger/entries` — reads ledger entries with `ledger:read`
 - `POST /agent/v1/ledger/entries` — accepts an idempotent, scoped remote Agent
   ledger write with `ledger:create` and publishes it to the incremental stream
@@ -90,24 +88,23 @@ endpoint is owner-authenticated and deletes the whole household partition plus
 the UID membership record; it is not an Agent scope and is safe to retry after a
 partial client-side Apple/Firebase account-deletion flow.
 
-Agent endpoints use a separate bearer-token boundary from Firebase owner APIs.
-Only the token hash is retained. Read-only grants are capped at 7 days, grants
-with create access at 24 hours, and access tokens at 15 minutes. The separately
-hashed refresh credential can rotate access tokens only until the parent grant
-expires. Rejected
-authentication attempts for a known connection are
+Agent endpoints use one workspace API Key as a separate bearer boundary from
+Firebase owner APIs. It always carries the six fixed Agent capabilities and stays
+valid until the owner resets or revokes it. Plaintext is returned only on creation
+or reset; the service retains only its SHA-256 hash and display prefix. Rejected
+authentication attempts for the known key identity are
 recorded in the owner-visible audit stream. Remote Agent entries use their own
 idempotency key, so a retry cannot duplicate a ledger entry while the app is
 offline. Reusing a key with different content is rejected. The same rule applies
-to remote asset updates. Every Agent write atomically stores the connection actor,
+to remote asset updates. Every Agent write atomically stores the API Key actor,
 exact scope, source (`api`, `mcp`, or `skill`), idempotency claim, redacted
 before/after difference, and owner-visible audit event.
-Source is selected once when the connection is created and is enforced by the
-server; callers cannot relabel a write or use the credential on another transport.
-An owner can pause, resume, or irrevocably revoke a connection without changing
-its scopes or expiry. Each connection is limited to 120 authenticated requests
+Callers cannot relabel the server-derived source or choose another household.
+The same key authenticates direct Agent HTTP and Remote MCP. Reset and revoke are
+effective on the next request; there is no refresh, expiry, pause, or resume flow.
+The key is limited to 120 authenticated requests
 per rolling fixed 60-second window by default. Repeated invalid tokens for a
-known connection produce a deduplicated owner-visible anomaly event; they do not
+known key identity produce a deduplicated owner-visible anomaly event; they do not
 silently widen access or permanently lock the valid credential.
 See [Skill installation](docs/skill-installation.md) for the user-side connection
 flow and credential boundary.

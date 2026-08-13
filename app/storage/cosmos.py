@@ -22,8 +22,7 @@ from app.config import ConfigurationError, Settings
 from app.models import (
     Actor,
     ActorType,
-    AgentConnectionCreate,
-    AgentConnectionView,
+    AgentAPIKeyView,
     AgentPrincipal,
     AgentScope,
     OperationSource,
@@ -219,89 +218,91 @@ class CosmosHouseholdStorage:
             )
         return RetentionResult(len(tombstones), len(audits))
 
-    def create_agent_connection(
+    def replace_agent_api_key(
         self,
         household_id: str,
         actor: Actor,
-        request: AgentConnectionCreate,
         connection_id: str,
-        token_hash: str,
-        refresh_token_hash: str,
-        token_expires_at: datetime,
+        key_hash: str,
+        key_prefix: str,
         now: datetime,
-    ) -> AgentConnectionView:
+    ) -> AgentAPIKeyView:
         now_text = now.isoformat().replace("+00:00", "Z")
+        existing = self.read_household_document(household_id, connection_id)
         document = {
             "id": connection_id,
-            "entityType": "agentConnection",
+            "entityType": "agentAPIKey",
             "householdId": household_id,
-            "name": request.name,
-            "scopes": [scope.value for scope in request.scopes],
-            "integration": request.integration.value,
+            "scopes": [scope.value for scope in AgentScope],
+            "integration": OperationSource.skill.value,
             "status": "active",
-            "tokenHash": token_hash,
-            "refreshTokenHash": refresh_token_hash,
-            "tokenExpiresAt": token_expires_at.isoformat().replace("+00:00", "Z"),
-            "grantExpiresAt": (now + timedelta(seconds=request.grant_duration_seconds or 0)).isoformat().replace("+00:00", "Z"),
+            "keyHash": key_hash,
+            "keyPrefix": key_prefix,
             "createdAt": now_text,
             "updatedAt": now_text,
         }
-        audit = self._authorization_audit(household_id, actor, document, "agent.grant")
-        self._entities_container().execute_item_batch(
-            batch_operations=[("create", (document,), {}), ("create", (audit,), {})],
-            partition_key=household_id,
-        )
-        return self._connection_view(document)
-
-    def list_agent_connections(self, household_id: str) -> list[AgentConnectionView]:
-        documents = list(self._entities_container().query_items(
+        action = "agent.api_key.reset" if existing is not None else "agent.api_key.create"
+        audit = self._authorization_audit(household_id, actor, document, action)
+        legacy = list(self._entities_container().query_items(
             query=(
                 "SELECT * FROM c WHERE c.householdId = @householdId "
-                "AND c.entityType = 'agentConnection' ORDER BY c.createdAt DESC"
+                "AND c.entityType = 'agentConnection'"
             ),
             parameters=[{"name": "@householdId", "value": household_id}],
             partition_key=household_id,
         ))
-        return [self._connection_view(item) for item in documents]
+        operations: list[tuple] = [
+            ("delete", (item["id"],), self._etag_kwargs(item))
+            for item in legacy
+            if item.get("entityType") == "agentConnection"
+        ]
+        if existing is None:
+            operations.append(("create", (document,), {}))
+        else:
+            operations.append(
+                ("replace", (connection_id, document), self._etag_kwargs(existing))
+            )
+        operations.append(("create", (audit,), {}))
+        self._entities_container().execute_item_batch(
+            batch_operations=operations,
+            partition_key=household_id,
+        )
+        return self._api_key_view(document)
 
-    def revoke_agent_connection(
+    def agent_api_key(self, household_id: str) -> AgentAPIKeyView | None:
+        documents = list(self._entities_container().query_items(
+            query=(
+                "SELECT * FROM c WHERE c.householdId = @householdId "
+                "AND c.entityType = 'agentAPIKey' AND c.status = 'active'"
+            ),
+            parameters=[{"name": "@householdId", "value": household_id}],
+            partition_key=household_id,
+        ))
+        active = [
+            item for item in documents
+            if item.get("entityType") == "agentAPIKey" and item.get("status") == "active"
+        ]
+        if not active:
+            return None
+        return self._api_key_view(max(active, key=lambda value: value["updatedAt"]))
+
+    def revoke_agent_api_key(
         self,
         household_id: str,
         actor: Actor,
-        connection_id: str,
-    ) -> AgentConnectionView:
-        document = self.read_household_document(household_id, connection_id)
-        if document is None or document.get("entityType") != "agentConnection":
-            raise ValueError("Agent connection not found")
+        now: datetime,
+    ) -> AgentAPIKeyView | None:
+        visible = self.agent_api_key(household_id)
+        if visible is None:
+            return None
+        connection_id = str(visible.connection_id)
+        document = self._required_agent_api_key(household_id, connection_id)
         updated = dict(document)
         updated["status"] = "revoked"
-        updated["updatedAt"] = self._now()
-        audit = self._authorization_audit(household_id, actor, updated, "agent.revoke")
-        self._entities_container().execute_item_batch(
-            batch_operations=[
-                ("replace", (connection_id, updated), self._etag_kwargs(document)),
-                ("create", (audit,), {}),
-            ],
-            partition_key=household_id,
-        )
-        return self._connection_view(updated)
-
-    def pause_agent_connection(
-        self,
-        household_id: str,
-        actor: Actor,
-        connection_id: str,
-        now: datetime,
-    ) -> AgentConnectionView:
-        document = self._required_agent_connection(household_id, connection_id)
-        if document["status"] == "revoked":
-            raise ValueError("Revoked agent connection cannot be paused")
-        if document["status"] == "paused":
-            return self._connection_view(document)
-        updated = dict(document)
-        updated["status"] = "paused"
         updated["updatedAt"] = self._timestamp(now)
-        audit = self._authorization_audit(household_id, actor, updated, "agent.pause")
+        audit = self._authorization_audit(
+            household_id, actor, updated, "agent.api_key.revoke"
+        )
         self._entities_container().execute_item_batch(
             batch_operations=[
                 ("replace", (connection_id, updated), self._etag_kwargs(document)),
@@ -309,36 +310,7 @@ class CosmosHouseholdStorage:
             ],
             partition_key=household_id,
         )
-        return self._connection_view(updated)
-
-    def resume_agent_connection(
-        self,
-        household_id: str,
-        actor: Actor,
-        connection_id: str,
-        now: datetime,
-    ) -> AgentConnectionView:
-        document = self._required_agent_connection(household_id, connection_id)
-        if document["status"] == "revoked":
-            raise ValueError("Revoked agent connection cannot be resumed")
-        if datetime.fromisoformat(
-            document["grantExpiresAt"].replace("Z", "+00:00")
-        ) <= now:
-            raise ValueError("Expired agent connection cannot be resumed")
-        if document["status"] == "active":
-            return self._connection_view(document)
-        updated = dict(document)
-        updated["status"] = "active"
-        updated["updatedAt"] = self._timestamp(now)
-        audit = self._authorization_audit(household_id, actor, updated, "agent.resume")
-        self._entities_container().execute_item_batch(
-            batch_operations=[
-                ("replace", (connection_id, updated), self._etag_kwargs(document)),
-                ("create", (audit,), {}),
-            ],
-            partition_key=household_id,
-        )
-        return self._connection_view(updated)
+        return self._api_key_view(updated)
 
     def consume_agent_request(
         self,
@@ -349,7 +321,7 @@ class CosmosHouseholdStorage:
         window_seconds: int,
     ) -> bool:
         for attempt in range(32):
-            document = self._required_agent_connection(household_id, connection_id)
+            document = self._required_agent_api_key(household_id, connection_id)
             window_start = self._window_start(
                 document.get("requestWindowStartedAt"), now, window_seconds
             )
@@ -395,74 +367,23 @@ class CosmosHouseholdStorage:
             return count <= limit
         raise RuntimeError("Agent request counter retry exhausted")
 
-    def authenticate_agent_token(
+    def authenticate_agent_api_key(
         self,
         household_id: str,
         connection_id: str,
-        token_hash: str,
+        key_hash: str,
         now: datetime,
     ) -> AgentPrincipal | None:
         document = self.read_household_document(household_id, connection_id)
-        if document is None or document.get("entityType") != "agentConnection":
+        if document is None or document.get("entityType") != "agentAPIKey":
             return None
-        if document.get("status") != "active" or document.get("tokenHash") != token_hash:
-            return None
-        if datetime.fromisoformat(document["tokenExpiresAt"].replace("Z", "+00:00")) <= now:
-            return None
-        if datetime.fromisoformat(document["grantExpiresAt"].replace("Z", "+00:00")) <= now:
+        if document.get("status") != "active" or document.get("keyHash") != key_hash:
             return None
         return AgentPrincipal(
             household_id=UUID(household_id),
             connection_id=UUID(connection_id),
             scopes=[AgentScope(value) for value in document["scopes"]],
             integration=OperationSource(document.get("integration", "api")),
-        )
-
-    def refresh_agent_token(
-        self,
-        household_id: str,
-        connection_id: str,
-        refresh_token_hash: str,
-        new_token_hash: str,
-        requested_expires_at: datetime,
-        now: datetime,
-    ) -> tuple[AgentPrincipal, datetime] | None:
-        document = self.read_household_document(household_id, connection_id)
-        if document is None or document.get("entityType") != "agentConnection":
-            return None
-        grant_expires_at = datetime.fromisoformat(
-            document["grantExpiresAt"].replace("Z", "+00:00")
-        )
-        if (
-            document.get("status") != "active"
-            or document.get("refreshTokenHash") != refresh_token_hash
-            or grant_expires_at <= now
-        ):
-            return None
-        token_expires_at = min(requested_expires_at, grant_expires_at)
-        updated = dict(document)
-        updated["tokenHash"] = new_token_hash
-        updated["tokenExpiresAt"] = token_expires_at.isoformat().replace("+00:00", "Z")
-        updated["updatedAt"] = now.isoformat().replace("+00:00", "Z")
-        actor = Actor(type=ActorType.agent, id=connection_id)
-        audit = self._authorization_audit(
-            household_id, actor, updated, "agent.token.refresh"
-        )
-        self._entities_container().execute_item_batch(
-            batch_operations=[
-                ("replace", (connection_id, updated), self._etag_kwargs(document)),
-                ("create", (audit,), {}),
-            ],
-            partition_key=household_id,
-        )
-        return (
-            AgentPrincipal(
-                household_id=UUID(household_id),
-                connection_id=UUID(connection_id),
-                scopes=[AgentScope(value) for value in updated["scopes"]],
-                integration=OperationSource(updated.get("integration", "api")),
-            ),
-            token_expires_at,
         )
 
     def record_agent_auth_failure(
@@ -478,7 +399,7 @@ class CosmosHouseholdStorage:
         operation_id = f"agent.auth:{connection_id}:{timestamp}"
         for attempt in range(32):
             document = self.read_household_document(household_id, connection_id)
-            if document is None or document.get("entityType") != "agentConnection":
+            if document is None or document.get("entityType") != "agentAPIKey":
                 return
             window_start = self._window_start(
                 document.get("failedAuthWindowStartedAt"), now, window_seconds
@@ -1294,22 +1215,20 @@ class CosmosHouseholdStorage:
         return operation, audit
 
     @staticmethod
-    def _connection_view(document: dict) -> AgentConnectionView:
-        return AgentConnectionView(
+    def _api_key_view(document: dict) -> AgentAPIKeyView:
+        return AgentAPIKeyView(
             connection_id=document["id"],
-            name=document["name"],
+            key_prefix=document["keyPrefix"],
             scopes=document["scopes"],
-            integration=document.get("integration", "api"),
             status=document["status"],
-            grant_expires_at=document["grantExpiresAt"],
             created_at=document["createdAt"],
             last_used_at=document.get("lastUsedAt"),
         )
 
-    def _required_agent_connection(self, household_id: str, connection_id: str) -> dict:
+    def _required_agent_api_key(self, household_id: str, connection_id: str) -> dict:
         document = self.read_household_document(household_id, connection_id)
-        if document is None or document.get("entityType") != "agentConnection":
-            raise ValueError("Agent connection not found")
+        if document is None or document.get("entityType") != "agentAPIKey":
+            raise ValueError("Agent API key not found")
         return document
 
     @staticmethod

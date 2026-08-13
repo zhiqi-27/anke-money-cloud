@@ -56,11 +56,11 @@ behavior.
 - [x] Migration accepts only Local provenance, and a new session requires the
       server-owned workspace status to be `empty`.
 - [x] Cosmos writes batch the accepted entity, operation result, audit event, and device sequence in one household partition.
-- [x] Owner APIs create, list, and revoke scoped Agent connections without storing plaintext tokens.
+- [x] Owner APIs get, create/reset, and revoke the single full-capability Agent API Key without storing plaintext.
 - [x] Remote Agent ledger writes are idempotent, audited, and visible to the app's next cursor pull.
-- [x] Revoked, expired, or invalid tokens for a known Agent connection are rejected and audited.
-- [x] Access tokens rotate within 15 minutes and refresh cannot outlive or bypass the parent grant.
-- [x] All six A2 Agent scopes have separate enforced routes; insufficient-scope attempts are rejected and audited.
+- [x] Reset, revoked, invalid, and legacy limited-access credentials are rejected and audited.
+- [x] The API Key has all six fixed Agent capabilities, no expiry or refresh path, and plaintext is returned only on create/reset.
+- [x] All six Agent capabilities have separate enforced routes and excluded operations remain unreachable.
 - [x] Remote asset updates validate one account, append a snapshot, batch entity/operation/audit writes, and replay idempotently.
 - [x] Empty or staging workspaces reject normal sync writes and Agent authorization until migration activation.
 - [x] The daily retention function idempotently purges 30-day tombstone payloads and deletes 365-day audit events in local adapter tests.
@@ -75,34 +75,31 @@ not promote the Development deployment recorded earlier in this file.
 
 - [x] HTTP API exposes exactly the six frozen scopes and no destructive, authorization-management, cross-household, import, or bulk-write route.
 - [x] Every Agent write binds its verified connection, scope, idempotency key, source, request hash, redacted before/after difference, and audit event in one household transaction.
-- [x] Source is immutable connection metadata; spoofed write-body source is ignored and credentials cannot cross API/MCP transport boundaries.
+- [x] Source is server-derived metadata and spoofed write-body source is ignored; one API Key works through direct Agent HTTP and Remote MCP.
 - [x] Replaying the exact write returns its original result; reusing the key with changed content is rejected.
 - [x] Remote MCP uses Streamable HTTP and exposes exactly six tools backed by the same services as HTTP.
-- [x] A real MCP client session authenticates with a revocable connection token, lists six tools, writes, replays, and produces owner-visible MCP audit evidence.
+- [x] A real MCP client session authenticates with the revocable API Key, lists six tools, writes, replays, and produces owner-visible MCP audit evidence.
 - [x] The repository-packaged Anke Money Skill requires immediate confirmation before either write and validates against the Skill package contract.
 - [x] Current A2 code is deployed to Development and passes remote HTTP, MCP, audit, revocation, and reconnect E2E.
 
 ## A3/A4 local implementation checkpoint
 
-- [x] Owner-only pause, resume, and revoke preserve immutable scopes, source,
-      and expiry; revoked connections cannot resume.
-- [x] Connection views expose last use without returning credential hashes or
-      refresh material.
+- [x] Owner-only reset and revoke take effect on the next request; revoked keys cannot resume.
+- [x] API Key views expose prefix and last use without returning the stored hash or plaintext.
 - [x] Each connection has a bounded authenticated-request window; excess HTTP
       requests return 429 and one owner-visible rate-limit event per window.
-- [x] Repeated invalid tokens for a known connection create one deduplicated
+- [x] Repeated invalid keys for the known key identity create one deduplicated
       anomaly event while leaving the valid credential usable.
 - [x] Malicious strings, oversized amounts, invalid dates, non-integer money,
       and out-of-scope/cross-household calls are rejected.
 - [x] Agent routes cannot list or delete audit records or manage authorization.
-- [x] One independent HTTP client and one official Streamable HTTP MCP client
-      operate in the same household with separate credentials and attributable
-      audit evidence.
+- [x] Direct HTTP and the official Streamable HTTP MCP client use the same API Key
+      and produce attributable audit evidence in one household.
 - [x] The official MCP v2 client operates with canonical `2026-07-28` stateless
       requests, while a `2025-11-25` initialize client reaches the identical
       six-tool authorization and service boundary.
-- [x] Current A3/A4 code is deployed to Development and passes lifecycle, rate,
-      anomaly, malicious-parameter, immutable-audit, and two-client E2E.
+- [ ] The API Key replacement is deployed to Development and passes lifecycle,
+      rate, anomaly, malicious-parameter, immutable-audit, and HTTP/MCP E2E.
 
 ## Phase 5 privacy-erasure checkpoint
 

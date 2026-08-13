@@ -18,7 +18,7 @@ from app.services import (
     CloudService,
     InvalidAgentTokenError,
 )
-from app.models import AgentPrincipal, OperationSource
+from app.models import AgentPrincipal
 from app.storage.cosmos import CosmosHouseholdStorage
 
 
@@ -31,15 +31,8 @@ firebase_bearer = HTTPBearer(
 agent_bearer = HTTPBearer(
     auto_error=False,
     scheme_name="AgentBearer",
-    bearerFormat="Short-lived Anke agent token",
-    description="A scoped, revocable Anke Money agent connection token.",
-)
-
-agent_refresh_bearer = HTTPBearer(
-    auto_error=False,
-    scheme_name="AgentRefreshBearer",
-    bearerFormat="Anke agent refresh credential",
-    description="A connection-bound refresh credential valid only during its parent grant.",
+    bearerFormat="Anke Skill API key",
+    description="The full-capability, owner-revocable Anke Money Skill API key.",
 )
 
 
@@ -78,8 +71,6 @@ def current_agent(
         )
     try:
         principal = access.authenticate(credentials.credentials)
-        if principal.integration is not OperationSource.api:
-            raise InvalidAgentTokenError("Agent connection belongs to another integration")
         return principal
     except AgentRateLimitExceededError as exc:
         raise HTTPException(
@@ -93,18 +84,6 @@ def current_agent(
             detail="Invalid or missing agent authentication",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
-
-
-def agent_refresh_token(
-    credentials: HTTPAuthorizationCredentials | None = Security(agent_refresh_bearer),
-) -> str:
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing agent refresh authentication",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return credentials.credentials
 
 
 def current_identity(

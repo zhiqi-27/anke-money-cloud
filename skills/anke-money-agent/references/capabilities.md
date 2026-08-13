@@ -1,9 +1,9 @@
 # Anke Money capability reference
 
-The MCP connection uses a revocable bearer credential created by the Anke Money
-owner with the `Skill` integration. The server derives the connection ID,
-household ID, scopes, and `skill` operation source from that credential. Never
-send a household ID or source as a tool argument.
+The MCP connection uses the revocable, long-lived API Key created by the Anke Money
+owner. The server derives the connection ID, household ID, all six capabilities,
+and `skill` operation source from that credential. Never send a household ID or
+source as a tool argument.
 
 ## Read tools
 
@@ -45,6 +45,6 @@ A successful result includes `replayed`. `false` means the write was accepted;
 idempotency key to the full request and connection identity, so changing any
 argument while reusing the key is an error.
 
-Missing scope, expired or revoked credentials, validation failures, and attempts
-to update another household are terminal for that call. Explain the constraint
-without retrying under a different tool or credential.
+Invalid or revoked credentials, validation failures, and attempts to update another
+household are terminal for that call. Explain the constraint without retrying under
+a different tool or credential.
