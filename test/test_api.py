@@ -164,6 +164,109 @@ class ApiContractTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json(), {
+            "detail": "Request validation failed",
+            "errors": [{
+                "location": "body.manifest.sourceMode",
+                "type": "enum",
+            }],
+        })
+        self.assertNotIn("cloudkit", response.text)
+
+    def test_migration_validation_reports_only_safe_field_location_and_type(self):
+        storage = InMemoryHouseholdStorage()
+        service = CloudService(storage)
+        fastapi_app.dependency_overrides[cloud_service] = lambda: service
+        headers = {"Authorization": "Bearer valid-test-token"}
+        body = {
+            "deviceId": "abababab-abab-abab-abab-abababababab",
+            "manifest": {
+                "sessionId": "11111111-1111-1111-1111-111111111111",
+                "sourceMode": "local",
+                "schemaVersion": 1,
+                "recordCounts": {"ledgerEntry": 1},
+                "contentDigest": hashlib.sha256(b"[]").hexdigest(),
+            },
+            "items": [{
+                "entityType": "ledgerEntry",
+                "entityId": "private-entry-id",
+                "payload": {
+                    "kind": "transaction",
+                    "direction": "expense",
+                    "occurredAt": "2026-08-13T00:00:00Z",
+                    "monthStart": "2026-08-01",
+                    "channelId": "private-channel-id",
+                    "categoryId": "private-category-id",
+                    "amountInFen": 0,
+                    "note": "private financial note",
+                },
+                "createdAt": "2026-08-13T00:00:00Z",
+                "deletedAt": None,
+            }],
+        }
+
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            response = self.client.post("/api/v1/migrations", headers=headers, json=body)
+
+        self.assertEqual(response.status_code, 422)
+        error = response.json()["errors"][0]
+        self.assertEqual(error["location"], "body.items.0")
+        self.assertEqual(error["type"], "value_error")
+        self.assertNotIn("private", response.text)
+        self.assertNotIn("amountInFen", response.text)
+
+    def test_migration_rejects_cross_type_cosmos_id_collisions(self):
+        headers = {"Authorization": "Bearer valid-test-token"}
+        timestamp = "2026-08-13T00:00:00Z"
+        items = [
+            {
+                "entityType": "paymentChannel",
+                "entityId": "other",
+                "payload": {
+                    "name": "Channel",
+                    "symbolName": "wallet",
+                    "assetName": None,
+                    "sortOrder": 0,
+                    "isArchived": False,
+                    "isSystem": True,
+                },
+                "createdAt": timestamp,
+            },
+            {
+                "entityType": "category",
+                "entityId": "other",
+                "payload": {
+                    "name": "Category",
+                    "symbolName": "tag",
+                    "sortOrder": 0,
+                    "isArchived": False,
+                    "isSystem": True,
+                    "direction": "expense",
+                },
+                "createdAt": timestamp,
+            },
+        ]
+        body = {
+            "deviceId": "abababab-abab-abab-abab-abababababab",
+            "manifest": {
+                "sessionId": "11111111-1111-1111-1111-111111111111",
+                "sourceMode": "local",
+                "schemaVersion": 1,
+                "recordCounts": {"paymentChannel": 1, "category": 1},
+                "contentDigest": hashlib.sha256(b"collision").hexdigest(),
+            },
+            "items": items,
+        }
+
+        with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
+            response = self.client.post("/api/v1/migrations", headers=headers, json=body)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json()["errors"], [{
+            "location": "body",
+            "type": "value_error",
+        }])
+        self.assertNotIn("other", response.text)
 
     def test_protected_route_rejects_missing_or_invalid_token(self):
         with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):

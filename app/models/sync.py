@@ -313,6 +313,13 @@ class MigrationUploadRequest(APIModel):
     manifest: MigrationManifest
     items: list[MigrationItem] = Field(max_length=5_000)
 
+    @model_validator(mode="after")
+    def cosmos_ids_are_unique_within_household(self) -> "MigrationUploadRequest":
+        entity_ids = [item.entity_id for item in self.items]
+        if len(entity_ids) != len(set(entity_ids)):
+            raise ValueError("Migration entityIds must be unique within the household")
+        return self
+
 
 class MigrationStatus(str, Enum):
     staged = "staged"

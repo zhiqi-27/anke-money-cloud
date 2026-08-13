@@ -188,3 +188,20 @@ or deleted. No public client used the removed `cloudkit` API value, so no API
 compatibility window is required. Rollback would require a new product amendment
 and restoration of the removed client capability and API enum; it cannot introduce
 CloudKit and the Anke service as concurrent writers.
+
+## Approved amendment · 2026-08-13 · Reference entity ID namespaces
+
+Cloud reference definitions use collision-free logical IDs in every migration and
+sync payload: `channel:{localId}`, `category:{localId}`, and
+`asset-category:{localId}`. Ledger and asset payload references use the same cloud
+IDs; the iOS replica maps them back to its unchanged local definition IDs. This is
+required because Cosmos `id` uniqueness applies across every entity type inside one
+household partition, while the local product intentionally has overlapping fallback
+and legacy IDs such as `other` and `business`.
+
+The service rejects a migration containing duplicate `entityId` values before any
+staged write. Existing unique legacy IDs remain readable; no container or partition
+change is involved. Development synthetic partitions were already cleaned and no
+real Local migration had activated before this amendment, so no data backfill is
+required. Rollback before activation is the previous client mapping; after
+activation, rollback must retain read compatibility for the namespaced IDs.

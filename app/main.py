@@ -7,6 +7,7 @@ import uuid
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from app.auth import AuthenticatedIdentity
@@ -104,6 +105,26 @@ async def unhandled_exception(request: Request, exc: Exception):
         type(exc).__name__,
     )
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+@fastapi_app.exception_handler(RequestValidationError)
+async def request_validation_failed(request: Request, exc: RequestValidationError):
+    errors = [
+        {
+            "location": ".".join(str(part) for part in error["loc"]),
+            "type": error["type"],
+        }
+        for error in exc.errors()
+    ]
+    logger.warning(
+        "Request validation failed, path=%s errors=%s",
+        request.url.path,
+        errors,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Request validation failed", "errors": errors},
+    )
 
 
 @fastapi_app.exception_handler(WorkspaceNotActiveError)

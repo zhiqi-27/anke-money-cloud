@@ -62,10 +62,15 @@ matches an earlier entry.
 
 ### Reference definitions
 
-`paymentChannel` and `category` documents use stable IDs and editable display
-metadata. Entries retain the stable reference ID. Deleting a definition first moves
+`paymentChannel` and `category` documents use stable, namespaced cloud IDs and
+editable display metadata. Channels use `channel:{localId}`, ledger categories use
+`category:{localId}`, and asset categories use `asset-category:{localId}`. Ledger
+and asset payloads retain the matching namespaced reference ID while the iOS replica
+maps it to its unchanged local definition ID. Deleting a definition first moves
 affected entries to the non-deletable matching fallback according to the iOS
-product decision.
+product decision. Migration validation rejects duplicate `entityId` values across
+all entity types before any staged write because Cosmos `id` is unique within the
+whole household partition, not within an entity type.
 
 ### Assets
 
