@@ -28,7 +28,7 @@ class AgentAccessTest(unittest.TestCase):
         self.storage = InMemoryHouseholdStorage()
         self.cloud = CloudService(self.storage)
         self.access = AgentAccessService(self.storage)
-        self.identity = AuthenticatedIdentity(uid="firebase-owner-1")
+        self.identity = AuthenticatedIdentity(uid="apple:owner-1")
         self.bootstrap = self.cloud.bootstrap(
             self.identity,
             DeviceRegistration(

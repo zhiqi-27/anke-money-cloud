@@ -6,8 +6,10 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.auth import (
+    AnkeSessionTokenIssuer,
+    AnkeSessionTokenVerifier,
     AuthenticatedIdentity,
-    FirebaseTokenVerifier,
+    ClerkTokenVerifier,
     InvalidTokenError,
     TokenVerifier,
 )
@@ -16,16 +18,25 @@ from app.services import (
     AgentAccessService,
     AgentRateLimitExceededError,
     CloudService,
+    AuthService,
     InvalidAgentTokenError,
+    ClerkManagementClient,
 )
 from app.models import AgentPrincipal
 from app.storage.cosmos import CosmosHouseholdStorage
 
 
-firebase_bearer = HTTPBearer(
+anke_session_bearer = HTTPBearer(
     auto_error=False,
-    bearerFormat="Firebase ID token",
-    description="Firebase ID token for the Anke Money Firebase project.",
+    bearerFormat="Anke session token",
+    description="Anke Cloud session token issued after Clerk authentication.",
+)
+
+clerk_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="ClerkBearer",
+    bearerFormat="Clerk session token",
+    description="Clerk session token exchanged once for an Anke Cloud session.",
 )
 
 agent_bearer = HTTPBearer(
@@ -38,7 +49,17 @@ agent_bearer = HTTPBearer(
 
 @lru_cache(maxsize=1)
 def get_token_verifier() -> TokenVerifier:
-    return FirebaseTokenVerifier(get_settings())
+    return AnkeSessionTokenVerifier(get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_clerk_verifier() -> ClerkTokenVerifier:
+    return ClerkTokenVerifier(get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_session_issuer() -> AnkeSessionTokenIssuer:
+    return AnkeSessionTokenIssuer(get_settings())
 
 
 @lru_cache(maxsize=1)
@@ -48,6 +69,18 @@ def get_household_storage() -> CosmosHouseholdStorage:
 
 def cloud_service() -> CloudService:
     return CloudService(get_household_storage())
+
+
+def auth_service() -> AuthService:
+    return AuthService(
+        get_household_storage(),
+        get_clerk_verifier(),
+        get_session_issuer(),
+    )
+
+
+def clerk_management_service() -> ClerkManagementClient:
+    return ClerkManagementClient(get_settings())
 
 
 def agent_access_service() -> AgentAccessService:
@@ -87,7 +120,7 @@ def current_agent(
 
 
 def current_identity(
-    credentials: HTTPAuthorizationCredentials | None = Security(firebase_bearer),
+    credentials: HTTPAuthorizationCredentials | None = Security(anke_session_bearer),
 ) -> AuthenticatedIdentity:
     if credentials is None:
         raise HTTPException(

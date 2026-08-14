@@ -3,6 +3,10 @@
 Evidence is appended only after the corresponding check runs. Local evidence does
 not prove Development cloud or Production behavior.
 
+Entries dated before 2026-08-13 include historical Firebase-backed authentication
+evidence. They are retained as an audit trail only and are superseded by the
+Clerk-backed Anke session contract; they do not validate the current implementation.
+
 | Date | Class | Gate | Evidence | Result |
 | --- | --- | --- | --- | --- |
 | 2026-08-04 | Local | Credential-free unit suite | Python 3.12 virtual environment; Firebase, API, model, in-memory storage, Cosmos adapter, and smoke guard tests | Passed; 31 tests in completion audit, including explicit expired and revoked Firebase token cases |
@@ -37,8 +41,9 @@ not prove Development cloud or Production behavior.
 
 ## Remaining evidence boundaries
 
-- Sign in with Apple, an Apple-issued credential through Firebase, and physical-device
-  behavior remain unverified. The synthetic Firebase smoke is not evidence for them.
+- Clerk provider flows, a Clerk-issued credential against the current deployed Anke
+  endpoint, and physical-device behavior remain unverified. Historical synthetic
+  Firebase smoke is not evidence for them.
 - Production deployment, secrets, schema promotion, and production data were not
   accessed or changed.
 - The Development A1+A2 E2E proves the deployed synthetic workflow and real Cosmos
@@ -48,5 +53,5 @@ not prove Development cloud or Production behavior.
   behavior still has local adapter evidence only; no operational timer invocation
   was forced against shared Development data.
 - Phase 5 account erasure is deployed and has exact synthetic-account evidence in
-  Development. It does not prove Apple token revocation, signed-iOS orchestration,
+  Development. It does not prove Clerk session revocation, signed-iOS orchestration,
   physical-device deletion, or Production behavior.

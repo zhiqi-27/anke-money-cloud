@@ -3,18 +3,18 @@ import unittest
 from app.config import ConfigurationError, Settings
 from app.storage.cosmos import CosmosHouseholdStorage
 from scripts.cosmos_smoke import validate_smoke_target
-from scripts.firebase_auth_smoke import validate_firebase_smoke_target
-from scripts.firebase_e2e_smoke import (
-    validate_remote_smoke_target,
-    validate_synthetic_auth_target,
-)
 
 
 def settings(**overrides) -> Settings:
     values = {
         "environment": "dev",
-        "firebase_project_id": "anke-money",
-        "firebase_check_revoked": True,
+        "clerk_jwks_url": "https://clerk.example/.well-known/jwks.json",
+        "clerk_issuer": "https://clerk.example",
+        "clerk_audience": "",
+        "clerk_secret_key": "sk_test_" + "s" * 32,
+        "clerk_backend_api_url": "https://api.clerk.com",
+        "session_signing_secret": "s" * 32,
+        "session_ttl_seconds": 2_592_000,
         "cosmos_endpoint": "https://cosmos-anke-money-dev-zq01.documents.azure.com:443/",
         "cosmos_database": "anke_money_dev",
         "cosmos_entities_container": "anke_entities",
@@ -46,50 +46,13 @@ class SmokeGuardTest(unittest.TestCase):
                         CosmosHouseholdStorage(value, container=object()),
                     )
 
-    def test_firebase_smoke_rejects_production_and_missing_project(self):
-        validate_firebase_smoke_target(settings())
+    def test_session_auth_rejects_short_signing_secret(self):
         with self.assertRaises(ConfigurationError):
-            validate_firebase_smoke_target(settings(environment="prod"))
+            settings(session_signing_secret="too-short").require_session_auth()
+
+    def test_clerk_auth_requires_https_jwks(self):
         with self.assertRaises(ConfigurationError):
-            validate_firebase_smoke_target(settings(firebase_project_id=""))
-
-    def test_synthetic_firebase_smoke_requires_dev_key_and_opt_in(self):
-        validate_synthetic_auth_target(
-            settings(),
-            web_api_key="client-api-key",
-            allow_synthetic_user=True,
-        )
-        rejected = (
-            (settings(environment="prod"), "client-api-key", True),
-            (settings(), "", True),
-            (settings(), "client-api-key", False),
-        )
-        for value, api_key, allow in rejected:
-            with self.subTest(environment=value.environment, allow=allow):
-                with self.assertRaises(ConfigurationError):
-                    validate_synthetic_auth_target(
-                        value,
-                        web_api_key=api_key,
-                        allow_synthetic_user=allow,
-                    )
-
-    def test_remote_firebase_smoke_requires_exact_https_host(self):
-        host = "func-anke-money-dev.example.net"
-        self.assertEqual(
-            validate_remote_smoke_target(f"https://{host}/", host),
-            f"https://{host}",
-        )
-        self.assertEqual(validate_remote_smoke_target("", ""), "")
-        rejected = (
-            (f"http://{host}", host),
-            (f"https://{host}/api/v1/me", host),
-            (f"https://{host}", "other.example.net"),
-            (f"https://{host}", ""),
-        )
-        for base_url, expected_host in rejected:
-            with self.subTest(base_url=base_url, expected_host=expected_host):
-                with self.assertRaises(ConfigurationError):
-                    validate_remote_smoke_target(base_url, expected_host)
+            settings(clerk_jwks_url="http://example.test/keys").require_clerk_auth()
 
 
 if __name__ == "__main__":

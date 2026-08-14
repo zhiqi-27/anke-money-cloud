@@ -8,6 +8,7 @@ import json
 from threading import RLock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from app.auth import AuthenticatedIdentity
 from app.models import (
     Actor,
     ActorType,
@@ -41,6 +42,7 @@ class InMemoryHouseholdStorage:
     def __init__(self):
         self._items: dict[tuple[str, str], dict] = {}
         self._identities: dict[str, str] = {}
+        self._identity_documents: dict[str, dict] = {}
         self._changes: dict[str, list[dict]] = {}
         self._device_sequences: dict[tuple[str, str], int] = {}
         self._lock = RLock()
@@ -51,33 +53,12 @@ class InMemoryHouseholdStorage:
         registration: DeviceRegistration,
     ) -> BootstrapResponse:
         with self._lock:
-            household_id = self._identities.get(uid)
-            if household_id is None:
-                household_id = str(uuid5(NAMESPACE_URL, f"anke-household:{uid}"))
-                self._identities[uid] = household_id
-                now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-                user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{uid}"))
-                for document in (
-                    {
-                        "id": user_id,
-                        "entityType": "user",
-                        "householdId": household_id,
-                        "firebaseUid": uid,
-                        "role": "owner",
-                    },
-                    {
-                        "id": household_id,
-                        "entityType": "household",
-                        "householdId": household_id,
-                        "status": "empty",
-                        "storageMode": "agentCloud",
-                        "lastChangeSequence": 0,
-                    },
-                ):
-                    document.update({"schemaVersion": 1, "revision": 1, "createdAt": now, "updatedAt": now})
-                    self._items[(household_id, document["id"])] = document
-            else:
-                user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{uid}"))
+            if uid not in self._identities:
+                self.ensure_identity(
+                    AuthenticatedIdentity(uid=uid, provider="unknown", provider_subject=uid)
+                )
+            household_id = self._identities[uid]
+            user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{uid}"))
 
             device_id = str(registration.device_id)
             connection_id = str(uuid5(NAMESPACE_URL, f"anke-connection:{uid}:{device_id}"))
@@ -122,6 +103,89 @@ class InMemoryHouseholdStorage:
                 workspace_status=household["status"],
             )
 
+    def ensure_identity(self, identity: AuthenticatedIdentity) -> None:
+        with self._lock:
+            uid = identity.uid
+            existing = self._identity_documents.get(uid)
+            if existing is not None:
+                if (
+                    existing.get("provider") != identity.provider
+                    or existing.get("providerSubject") != identity.provider_subject
+                ):
+                    raise ValueError("Identity provider subject does not match")
+                self._update_identity_document(identity)
+                return
+
+            household_id = str(uuid5(NAMESPACE_URL, f"anke-household:{uid}"))
+            self._identities[uid] = household_id
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{uid}"))
+            for document in (
+                {
+                    "id": user_id,
+                    "entityType": "user",
+                    "householdId": household_id,
+                    "userID": user_id,
+                    "authProvider": identity.provider,
+                    "providerSubject": identity.provider_subject,
+                    "email": identity.email,
+                    "displayName": identity.display_name,
+                    "role": "owner",
+                },
+                {
+                    "id": household_id,
+                    "entityType": "household",
+                    "householdId": household_id,
+                    "status": "empty",
+                    "storageMode": "agentCloud",
+                    "lastChangeSequence": 0,
+                },
+            ):
+                document.update({"schemaVersion": 1, "revision": 1, "createdAt": now, "updatedAt": now})
+                self._items[(household_id, document["id"])] = document
+            membership = {
+                "id": uid,
+                "uid": uid,
+                "entityType": "identityMembership",
+                "provider": identity.provider,
+                "providerSubject": identity.provider_subject,
+                "householdId": household_id,
+                "userId": user_id,
+                "role": "owner",
+                "createdAt": now,
+            }
+            self._identity_documents[uid] = membership
+
+    def update_identity_profile(
+        self,
+        identity: AuthenticatedIdentity,
+        display_name: str,
+    ) -> None:
+        with self._lock:
+            self.ensure_identity(identity)
+            household_id = self._identities[identity.uid]
+            user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{identity.uid}"))
+            user = self._items.get((household_id, user_id))
+            if user is not None:
+                user["displayName"] = display_name
+                user["updatedAt"] = self._timestamp(datetime.now(UTC))
+            self._identity_documents[identity.uid]["displayName"] = display_name
+
+    def _update_identity_document(self, identity: AuthenticatedIdentity) -> None:
+        document = self._identity_documents[identity.uid]
+        if identity.email:
+            document["email"] = identity.email
+        if identity.display_name:
+            document["displayName"] = identity.display_name
+        household_id = self._identities[identity.uid]
+        user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{identity.uid}"))
+        user = self._items.get((household_id, user_id))
+        if user is not None:
+            if identity.email:
+                user["email"] = identity.email
+            if identity.display_name:
+                user["displayName"] = identity.display_name
+
     def household_for_uid(self, uid: str) -> str | None:
         return self._identities.get(uid)
 
@@ -137,6 +201,7 @@ class InMemoryHouseholdStorage:
             self._changes.pop(household_id, None)
             for key in [key for key in self._device_sequences if key[0] == household_id]:
                 del self._device_sequences[key]
+            self._identity_documents.pop(uid, None)
             return len(keys)
 
     def run_retention(self, now: datetime) -> RetentionResult:

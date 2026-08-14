@@ -26,7 +26,7 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         self.storage = InMemoryHouseholdStorage()
         self.cloud = CloudService(self.storage)
         self.access = AgentAccessService(self.storage)
-        self.identity = AuthenticatedIdentity(uid="firebase-mcp-owner")
+        self.identity = AuthenticatedIdentity(uid="apple:mcp-owner")
         bootstrap = self.cloud.bootstrap(
             self.identity,
             DeviceRegistration(

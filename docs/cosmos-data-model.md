@@ -8,7 +8,7 @@ Primary API: Azure Cosmos DB for NoSQL
 | Resource | Partition key | Responsibility |
 | --- | --- | --- |
 | `anke_entities` | `/householdId` | Household ledger, reference data, assets, operations, grants, and audit events |
-| `anke_identities` | `/uid` | Minimal Firebase UID to household membership lookup |
+| `anke_identities` | `/uid` | Minimal Anke user ID to household membership lookup |
 
 Runtime application startup does not create these resources. Infrastructure setup
 must create `anke_entities` with the exact `/householdId` path and
@@ -29,7 +29,7 @@ Every `anke_entities` document contains:
   "updatedAt": "2026-08-04T00:00:00Z",
   "deletedAt": null,
   "deletion": null,
-  "actor": { "type": "user", "id": "firebase uid" },
+  "actor": { "type": "user", "id": "Anke user ID" },
   "operationId": "client-generated UUID",
   "lastAcceptedMutationId": "client-generated UUID"
 }
@@ -81,7 +81,7 @@ asset account or create an asset snapshot.
 ### `memberProfile`
 
 An owner-managed reference record for a person a ledger entry or asset snapshot may
-concern. It has no Firebase UID, login, role, invitation, grant, or collaboration
+concern. It has no Apple credential, login session, role, invitation, grant, or collaboration
 authority. Agent Cloud 1.0 still has one authenticating owner.
 
 ### `operation`
@@ -137,7 +137,9 @@ partition is known:
 ```json
 {
   "id": "membership:{householdId}",
-  "uid": "firebase uid",
+  "uid": "Anke user ID",
+  "provider": "apple",
+  "providerSubject": "stable provider subject",
   "householdId": "stable household UUID",
   "role": "owner",
   "status": "active",

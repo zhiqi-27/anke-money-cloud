@@ -19,6 +19,7 @@ from app.models import (
     SyncChange,
     SyncMutation,
 )
+from app.auth import AuthenticatedIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,14 @@ class RetentionResult:
 
 class HouseholdStorage(Protocol):
     def run_retention(self, now: datetime) -> RetentionResult: ...
+
+    def ensure_identity(self, identity: AuthenticatedIdentity) -> None: ...
+
+    def update_identity_profile(
+        self,
+        identity: AuthenticatedIdentity,
+        display_name: str,
+    ) -> None: ...
 
     def delete_account_data(self, uid: str) -> int: ...
 

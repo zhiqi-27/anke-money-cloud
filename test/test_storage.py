@@ -52,8 +52,13 @@ def make_request() -> LedgerEntryCreate:
 def settings() -> Settings:
     return Settings(
         environment="test",
-        firebase_project_id="anke-money-test",
-        firebase_check_revoked=False,
+        clerk_jwks_url="https://clerk.example/.well-known/jwks.json",
+        clerk_issuer="https://clerk.example",
+        clerk_audience="",
+        clerk_secret_key="sk_test_" + "s" * 32,
+        clerk_backend_api_url="https://api.clerk.com",
+        session_signing_secret="s" * 32,
+        session_ttl_seconds=3600,
         cosmos_endpoint="https://anke-money-dev.documents.azure.com:443/",
         cosmos_database="anke-money-dev",
         cosmos_entities_container="anke_entities",
@@ -196,7 +201,7 @@ class InMemoryHouseholdStorageTest(unittest.TestCase):
     def test_create_is_atomic_shape_and_idempotent(self):
         storage = InMemoryHouseholdStorage()
         request = make_request()
-        actor = Actor(type=ActorType.user, id="firebase-user-1")
+        actor = Actor(type=ActorType.user, id="apple:subject-1")
 
         first = storage.create_ledger_entry(request, actor)
         replay = storage.create_ledger_entry(request, actor)
@@ -213,7 +218,7 @@ class InMemoryHouseholdStorageTest(unittest.TestCase):
 
     def test_same_business_data_with_new_operation_appends(self):
         storage = InMemoryHouseholdStorage()
-        actor = Actor(type=ActorType.user, id="firebase-user-1")
+        actor = Actor(type=ActorType.user, id="apple:subject-1")
         first = make_request()
         second = first.model_copy(
             update={"id": uuid4(), "idempotency_key": uuid4()}
@@ -229,7 +234,7 @@ class InMemoryHouseholdStorageTest(unittest.TestCase):
     def test_point_read_requires_household_partition(self):
         storage = InMemoryHouseholdStorage()
         request = make_request()
-        actor = Actor(type=ActorType.user, id="firebase-user-1")
+        actor = Actor(type=ActorType.user, id="apple:subject-1")
         result = storage.create_ledger_entry(request, actor)
 
         self.assertIsNone(
@@ -246,7 +251,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         device_id = uuid4()
         bootstrap = storage.bootstrap_owner(
-            "firebase-user-1",
+            "apple:subject-1",
             DeviceRegistration(
                 device_id=device_id,
                 name="Synthetic iPhone",
@@ -273,7 +278,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         ):
             storage.stage_migration(
                 household_id,
-                Actor(type=ActorType.user, id="firebase-user-1"),
+                Actor(type=ActorType.user, id="apple:subject-1"),
                 request,
             )
 
@@ -281,7 +286,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         container = FakeCosmosContainer()
         storage = CosmosHouseholdStorage(settings(), container=container)
         request = make_request()
-        actor = Actor(type=ActorType.user, id="firebase-user-1")
+        actor = Actor(type=ActorType.user, id="apple:subject-1")
         container.create_item(body={
             "id": str(request.household_id),
             "householdId": str(request.household_id),
@@ -342,7 +347,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         device_id = uuid4()
 
         result = storage.bootstrap_owner(
-            "firebase-user-1",
+            "apple:subject-1",
             DeviceRegistration(
                 device_id=device_id,
                 name="Synthetic iPhone",
@@ -351,7 +356,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
 
         self.assertEqual(result.device_id, device_id)
-        self.assertEqual(storage.household_for_uid("firebase-user-1"), str(result.household_id))
+        self.assertEqual(storage.household_for_uid("apple:subject-1"), str(result.household_id))
         household_documents = [
             item for (partition, _), item in entities.items.items()
             if partition == str(result.household_id)
@@ -370,7 +375,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
             identities_container=identities,
         )
         bootstrap = storage.bootstrap_owner(
-            "firebase-user-1",
+            "apple:subject-1",
             DeviceRegistration(
                 device_id=uuid4(),
                 name="Synthetic iPhone",
@@ -379,8 +384,8 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         household_id = str(bootstrap.household_id)
 
-        deleted = storage.delete_account_data("firebase-user-1")
-        replayed = storage.delete_account_data("firebase-user-1")
+        deleted = storage.delete_account_data("apple:subject-1")
+        replayed = storage.delete_account_data("apple:subject-1")
 
         self.assertEqual(deleted, 4)
         self.assertEqual(replayed, 0)
@@ -398,7 +403,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         device_id = uuid4()
         bootstrap = storage.bootstrap_owner(
-            "firebase-user-1",
+            "apple:subject-1",
             DeviceRegistration(device_id=device_id, name="Synthetic iPhone", app_version="0.1.0"),
         )
         mutation = SyncMutation(
@@ -414,11 +419,11 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
 
         result = storage.push_mutation(
             str(bootstrap.household_id),
-            Actor(type=ActorType.user, id="firebase-user-1"),
+                Actor(type=ActorType.user, id="apple:subject-1"),
             mutation,
         )
         restored = storage.bootstrap_owner(
-            "firebase-user-1",
+            "apple:subject-1",
             DeviceRegistration(
                 device_id=device_id,
                 name="Synthetic iPhone",
@@ -446,10 +451,10 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         device_id = uuid4()
         bootstrap = storage.bootstrap_owner(
-            "firebase-user-1",
+            "apple:subject-1",
             DeviceRegistration(device_id=device_id, name="Synthetic iPhone", app_version="0.1.0"),
         )
-        actor = Actor(type=ActorType.user, id="firebase-user-1")
+        actor = Actor(type=ActorType.user, id="apple:subject-1")
         for sequence in (1, 2):
             storage.push_mutation(
                 str(bootstrap.household_id),
@@ -492,7 +497,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         cloud = CloudService(storage)
         access = AgentAccessService(storage)
-        identity = AuthenticatedIdentity(uid="firebase-user-1")
+        identity = AuthenticatedIdentity(uid="apple:subject-1")
         bootstrap = cloud.bootstrap(
             identity,
             DeviceRegistration(device_id=uuid4(), name="Synthetic iPhone", app_version="0.1.0"),
@@ -524,7 +529,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         access = AgentAccessService(
             storage, requests_per_minute=1, failed_auth_threshold=3
         )
-        identity = AuthenticatedIdentity(uid="firebase-security-owner")
+        identity = AuthenticatedIdentity(uid="apple:security-owner")
         bootstrap = cloud.bootstrap(
             identity,
             DeviceRegistration(
@@ -573,7 +578,7 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         )
         cloud = CloudService(storage)
         access = AgentAccessService(storage)
-        identity = AuthenticatedIdentity(uid="firebase-concurrent-owner")
+        identity = AuthenticatedIdentity(uid="apple:concurrent-owner")
         bootstrap = cloud.bootstrap(
             identity,
             DeviceRegistration(

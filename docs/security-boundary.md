@@ -2,13 +2,18 @@
 
 ## Authentication
 
-The client sends a Firebase ID token as `Authorization: Bearer <token>`. The API
-verifies signature, issuer, audience/project, expiry, and revocation policy through
-Firebase Admin. It extracts the verified `uid`; it never accepts a UID in a header
-or body as proof of identity.
+The native iOS client uses ClerkKit for Apple, Google, and email-code sign-in. It
+sends the short-lived Clerk session token to `POST /api/v1/auth/clerk/exchange`.
+Anke Cloud verifies the Clerk JWT signature, issuer, optional audience, and expiry,
+then signs an Anke session token. Protected requests send only that Anke session
+token as `Authorization: Bearer <token>`.
+The API never accepts a client UID or provider subject as proof of identity.
 
-Firebase establishes identity only. Household membership, roles, device status,
-Agent API Key state, and resource ownership are server-side authorization checks.
+The Anke session issuer is the only token authority for protected APIs. Household
+membership, roles, device status, Agent API Key state, and resource ownership are
+server-side authorization checks. Clerk is the identity provider. Apple, Google,
+and email-code sign-in are enabled in Clerk. Historical Firebase accounts are not
+compatible with the current product.
 
 ## Authorization
 
@@ -49,15 +54,15 @@ valid key.
 ## Secrets
 
 Preferred deployed access is Function App managed identity with a least-privilege
-Cosmos data-plane role. Firebase and other non-managed credentials use Key Vault or
-protected Function App settings. Local development may use ignored files or shell
-environment variables.
+Cosmos data-plane role. The Clerk secret key and Anke session signing secret use
+Key Vault or protected Function App settings. Local development may use ignored
+files or shell environment variables.
 
 Never commit or log:
 
 - Cosmos account keys or connection strings
-- Firebase service-account JSON or private keys
-- Firebase ID tokens, refresh tokens, or decoded full claims
+- Anke session signing secrets or session tokens
+- Clerk session tokens, secret keys, or private keys
 - Agent API Keys or their plaintext
 - Apple private keys
 - raw financial notes or complete financial documents
@@ -90,19 +95,14 @@ The smoke script never prints credentials or full documents. It reports only the
 account name, database/container names, run ID, created item ID, request status,
 and read-back identity fields.
 
-## Development Firebase smoke test
+## Development Clerk authentication smoke test
 
-The Firebase smoke script runs only in Local or Development, reads a short-lived ID
-token through hidden terminal input, and verifies it against the configured project.
-The token must never appear in command arguments, shell history, committed files,
-or logs. The script reports only the project ID and verified UID.
-
-The opt-in end-to-end variant runs only in Development and requires
-`ANKE_FIREBASE_ALLOW_SYNTHETIC_USER=true`. It creates a random UID prefixed
-`smoke-backend-`, exchanges a custom token for a real Firebase ID token, calls
-`/api/v1/me`, and deletes that exact synthetic user in a `finally` block. It never
-prints either token or the client API key and it is not evidence for Apple login or
-physical-device behavior.
+The Clerk authentication smoke test is opt-in and accepts a short-lived Clerk
+session token through hidden input or a protected local runner. It must never put
+session tokens, secret keys, or full user records in command arguments, shell
+history, committed files, or logs. It reports only the verified Anke user ID.
+Synthetic account creation and deletion are limited to Development and must
+target an explicitly synthetic Clerk subject.
 
 ## Production boundary
 

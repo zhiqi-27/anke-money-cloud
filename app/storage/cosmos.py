@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from app.auth import AuthenticatedIdentity
 from azure.cosmos import CosmosClient
 from azure.cosmos.exceptions import (
     CosmosBatchOperationError,
@@ -81,7 +82,7 @@ class CosmosHouseholdStorage:
         now = self._now()
         if identity is None:
             base = {"householdId": household_id, "schemaVersion": 1, "revision": 1, "createdAt": now, "updatedAt": now}
-            user = {"id": user_id, "entityType": "user", "firebaseUid": uid, "role": "owner", **base}
+            user = {"id": user_id, "entityType": "user", "userID": user_id, "role": "owner", **base}
             household = {"id": household_id, "entityType": "household", "status": "empty", "storageMode": "agentCloud", "lastChangeSequence": 0, **base}
             try:
                 self._entities_container().execute_item_batch(
@@ -95,6 +96,8 @@ class CosmosHouseholdStorage:
                 "id": uid,
                 "uid": uid,
                 "entityType": "identityMembership",
+                "provider": "unknown",
+                "providerSubject": uid,
                 "householdId": household_id,
                 "userId": user_id,
                 "role": "owner",
@@ -148,6 +151,94 @@ class CosmosHouseholdStorage:
             next_outbox_sequence=int(device["lastOutboxSequence"]) + 1,
             workspace_status=household["status"],
         )
+
+    def ensure_identity(self, identity: AuthenticatedIdentity) -> None:
+        existing = self._read_identity(identity.uid)
+        if existing is not None:
+            if (
+                existing.get("provider") not in {None, identity.provider, "unknown"}
+                or existing.get("providerSubject") not in {None, identity.provider_subject, identity.uid}
+            ):
+                raise ValueError("Identity provider subject does not match")
+            if identity.display_name:
+                self.update_identity_profile(identity, identity.display_name)
+            return
+
+        household_id = str(uuid5(NAMESPACE_URL, f"anke-household:{identity.uid}"))
+        user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{identity.uid}"))
+        now = self._now()
+        base = {
+            "householdId": household_id,
+            "schemaVersion": 1,
+            "revision": 1,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        user = {
+            "id": user_id,
+            "entityType": "user",
+            "userID": user_id,
+            "authProvider": identity.provider,
+            "providerSubject": identity.provider_subject,
+            "email": identity.email,
+            "displayName": identity.display_name,
+            "role": "owner",
+            **base,
+        }
+        household = {
+            "id": household_id,
+            "entityType": "household",
+            "status": "empty",
+            "storageMode": "agentCloud",
+            "lastChangeSequence": 0,
+            **base,
+        }
+        try:
+            self._entities_container().execute_item_batch(
+                batch_operations=[("create", (user,), {}), ("create", (household,), {})],
+                partition_key=household_id,
+            )
+        except (CosmosResourceExistsError, CosmosBatchOperationError) as exc:
+            if getattr(exc, "status_code", 409) != 409:
+                raise
+        membership = {
+            "id": identity.uid,
+            "uid": identity.uid,
+            "entityType": "identityMembership",
+            "provider": identity.provider,
+            "providerSubject": identity.provider_subject,
+            "householdId": household_id,
+            "userId": user_id,
+            "role": "owner",
+            "createdAt": now,
+        }
+        try:
+            self._identities_container().create_item(body=membership)
+        except CosmosResourceExistsError:
+            existing = self._read_identity(identity.uid)
+            if existing is None or existing.get("householdId") != household_id:
+                raise RuntimeError("Identity membership race resolved to another household")
+
+    def update_identity_profile(
+        self,
+        identity: AuthenticatedIdentity,
+        display_name: str,
+    ) -> None:
+        membership = self._read_identity(identity.uid)
+        if membership is None:
+            self.ensure_identity(identity)
+            membership = self._read_identity(identity.uid)
+        if membership is None:
+            raise RuntimeError("Identity membership is missing")
+        membership["displayName"] = display_name
+        self._identities_container().upsert_item(body=membership)
+        user_id = membership.get("userId")
+        if isinstance(user_id, str):
+            user = self.read_household_document(membership["householdId"], user_id)
+            if user is not None:
+                user["displayName"] = display_name
+                user["updatedAt"] = self._now()
+                self._entities_container().upsert_item(body=user)
 
     def household_for_uid(self, uid: str) -> str | None:
         identity = self._read_identity(uid)

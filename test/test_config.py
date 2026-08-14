@@ -12,16 +12,17 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.environment, "local")
         self.assertFalse(settings.cosmos_allow_smoke_write)
-        self.assertFalse(settings.firebase_check_revoked)
+        self.assertEqual(settings.session_ttl_seconds, 2_592_000)
         self.assertTrue(settings.docs_enabled)
         self.assertEqual(settings.agent_requests_per_minute, 120)
         self.assertEqual(settings.agent_failed_auth_threshold, 5)
 
-    def test_production_checks_revocation_by_default(self):
+    def test_production_keeps_auth_configuration_explicit(self):
         with patch.dict(os.environ, {"ANKE_ENVIRONMENT": "prod"}, clear=True):
             settings = Settings.from_environment()
 
-        self.assertTrue(settings.firebase_check_revoked)
+        with self.assertRaises(ConfigurationError):
+            settings.require_session_auth()
         self.assertFalse(settings.docs_enabled)
 
     def test_rejects_unknown_environment(self):

@@ -7,12 +7,13 @@
 - [x] Azure Functions exposes the same FastAPI application through ASGI.
 - [x] `/ping` returns a non-sensitive health payload.
 - [x] `/openapi.json` exposes the intended public contract.
-- [x] Protected routes reject missing, malformed, expired, revoked, or invalid Firebase tokens.
-- [x] Verified token identity comes from Firebase, never a client UID field.
+- [x] Protected routes reject missing, malformed, expired, or invalid Anke session tokens.
+- [x] `/api/v1/auth/clerk/exchange` verifies Clerk credentials before issuing an Anke session.
+- [x] Verified token identity comes from Anke's signed session, never a client UID field.
 - [x] Primary Cosmos storage requires `/householdId` on every document and point read.
 - [x] Ledger create, operation claim, and audit event are modeled as one household
   transactional batch.
-- [x] Normal tests use fakes and require no Azure/Firebase/network access.
+- [x] Normal tests use fakes and require no Azure/Clerk/network access.
 - [x] Development Cosmos smoke creates and reads one synthetic probe without touching
   real user documents.
 - [x] `python -m unittest discover -s test -p 'test_*.py'`, compile verification,
@@ -22,7 +23,7 @@
 
 - Local: imports, unit tests, TestClient, compile checks.
 - Azure Functions local host: Functions routing/runtime evidence.
-- Development cloud: configured cloud resources and Development Cosmos/Firebase
+- Development cloud: configured cloud resources and Development Cosmos/Clerk-session
   service evidence. Deployed endpoint evidence is recorded separately when code is
   actually deployed.
 - Production: independently authorized deployment and production checks.
@@ -32,14 +33,14 @@ One evidence class never proves another.
 ## Development deployment
 
 - [x] `anke_identities` exists with the exact `/uid` partition key.
-- [x] Firebase Admin credentials are stored in Development Key Vault and exposed
-  to the Function App only through a managed-identity Key Vault reference.
+- [ ] Clerk secret key and Anke session signing secret are stored in Development
+  Key Vault and exposed to the Function App only through managed-identity references.
 - [x] The committed Function project is deployed with a Python remote build.
 - [x] Deployed `/ping` and `/openapi.json` return 200.
-- [x] Deployed `/api/v1/me` returns 401 without a valid token and 200 for a real
-  Firebase ID token whose UID is returned unchanged.
+- [ ] Deployed `/api/v1/me` returns 401 without a valid token and 200 for a real
+  Anke session issued from a valid Clerk credential.
 
-Development deployment evidence does not prove Sign in with Apple or physical-device
+Development deployment evidence does not prove Clerk provider flows or physical-device
 behavior.
 
 ## A1 local implementation checkpoint
@@ -111,5 +112,5 @@ not promote the Development deployment recorded earlier in this file.
 - [x] Current privacy-erasure code is deployed to Development and exercised only
       against an exact synthetic household with verified cleanup.
 
-Local account-erasure tests do not prove Firebase/Apple token revocation, deployed
+Local account-erasure tests do not prove Clerk session revocation, deployed
 Cosmos behavior, a signed iOS client, or Production deletion.

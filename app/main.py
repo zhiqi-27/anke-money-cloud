@@ -6,17 +6,21 @@ import time
 import uuid
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security, status
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
-from app.auth import AuthenticatedIdentity
-from app.config import get_settings
+from app.auth import AuthenticatedIdentity, InvalidClerkCredentialError
+from app.config import ConfigurationError, get_settings
 from app.dependencies import (
     agent_access_service,
+    auth_service,
     cloud_service,
     current_agent,
     current_identity,
+    clerk_bearer,
+    clerk_management_service,
 )
 from app.models import (
     AgentAPIKeyCreated,
@@ -36,10 +40,15 @@ from app.models import (
     SyncPullResponse,
     SyncPushRequest,
     SyncPushResponse,
+    AnkeSessionResponse,
+    ProfileUpdateRequest,
 )
 from app.services import (
     AgentAccessService,
     CloudService,
+    AuthService,
+    ClerkManagementClient,
+    ClerkManagementError,
     WorkspaceNotActiveError,
 )
 from app.services.cloud import MembershipRequiredError
@@ -140,19 +149,81 @@ async def ping() -> dict[str, str]:
     }
 
 
+@fastapi_app.post(
+    "/api/v1/auth/clerk/exchange",
+    tags=["identity"],
+    response_model=AnkeSessionResponse,
+    summary="Verify a Clerk session and issue an Anke session",
+    responses={
+        401: {"description": "Invalid Clerk session"},
+        503: {"description": "Authentication service is not configured"},
+    },
+)
+async def authenticate_with_clerk(
+    credentials: HTTPAuthorizationCredentials | None = Security(clerk_bearer),
+    service: AuthService = Depends(auth_service),
+) -> AnkeSessionResponse:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing Clerk authentication",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        return service.sign_in_with_clerk(
+            f"{credentials.scheme} {credentials.credentials}"
+        )
+    except InvalidClerkCredentialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Clerk authentication failed",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except ConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        ) from exc
+
+
 @fastapi_app.get(
     "/api/v1/me",
     tags=["identity"],
-    summary="Return the verified Firebase identity",
+    summary="Return the verified Anke identity",
     responses={
-        401: {"description": "Missing or invalid Firebase ID token"},
+        401: {"description": "Missing or invalid Anke session token"},
         503: {"description": "Authentication service is not configured"},
     },
 )
 async def me(
     identity: AuthenticatedIdentity = Depends(current_identity),
-) -> dict[str, str]:
-    return {"uid": identity.uid}
+) -> dict[str, str | None]:
+    return {
+        "uid": identity.uid,
+        "provider": identity.provider,
+        "displayName": identity.display_name,
+        "email": identity.email,
+    }
+
+
+@fastapi_app.patch(
+    "/api/v1/me",
+    tags=["identity"],
+    response_model=AnkeSessionResponse,
+    summary="Update the signed-in owner's display name",
+)
+async def update_me(
+    request: ProfileUpdateRequest,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: AuthService = Depends(auth_service),
+) -> AnkeSessionResponse:
+    try:
+        return service.update_profile(identity, request.display_name)
+    except ConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        ) from exc
 
 
 @fastapi_app.delete(
@@ -164,7 +235,20 @@ async def me(
 async def delete_account(
     identity: AuthenticatedIdentity = Depends(current_identity),
     service: CloudService = Depends(cloud_service),
+    clerk: ClerkManagementClient = Depends(clerk_management_service),
 ) -> Response:
+    try:
+        clerk.delete_user(identity.provider_subject)
+    except ClerkManagementError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Account management service unavailable",
+        ) from exc
+    except ConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        ) from exc
     service.delete_account(identity)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

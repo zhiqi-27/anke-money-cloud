@@ -40,8 +40,13 @@ def _integer(name: str, default: int, *, minimum: int, maximum: int) -> int:
 @dataclass(frozen=True, slots=True)
 class Settings:
     environment: str
-    firebase_project_id: str
-    firebase_check_revoked: bool
+    clerk_jwks_url: str
+    clerk_issuer: str
+    clerk_audience: str
+    clerk_secret_key: str
+    clerk_backend_api_url: str
+    session_signing_secret: str
+    session_ttl_seconds: int
     cosmos_endpoint: str
     cosmos_database: str
     cosmos_entities_container: str
@@ -67,10 +72,16 @@ class Settings:
             )
         return cls(
             environment=environment,
-            firebase_project_id=os.getenv("ANKE_FIREBASE_PROJECT_ID", "").strip(),
-            firebase_check_revoked=_boolean(
-                "ANKE_FIREBASE_CHECK_REVOKED",
-                default=environment not in {"local", "test"},
+            clerk_jwks_url=os.getenv("CLERK_JWKS_URL", "").strip(),
+            clerk_issuer=os.getenv("CLERK_ISSUER", "").strip(),
+            clerk_audience=os.getenv("CLERK_AUDIENCE", "").strip(),
+            clerk_secret_key=os.getenv("CLERK_SECRET_KEY", "").strip(),
+            clerk_backend_api_url=os.getenv(
+                "CLERK_BACKEND_API_URL", "https://api.clerk.com"
+            ).strip(),
+            session_signing_secret=os.getenv("ANKE_SESSION_SIGNING_SECRET", "").strip(),
+            session_ttl_seconds=_integer(
+                "ANKE_SESSION_TTL_SECONDS", 2_592_000, minimum=300, maximum=31_536_000
             ),
             cosmos_endpoint=os.getenv("ANKE_COSMOS_ENDPOINT", "").strip(),
             cosmos_database=os.getenv("ANKE_COSMOS_DATABASE", "anke_money_dev").strip(),
@@ -104,9 +115,28 @@ class Settings:
     def docs_enabled(self) -> bool:
         return self.environment in {"local", "dev", "test"}
 
-    def require_firebase(self) -> None:
-        if not self.firebase_project_id:
-            raise ConfigurationError("ANKE_FIREBASE_PROJECT_ID is required for auth")
+    def require_clerk_auth(self) -> None:
+        if not self.clerk_jwks_url:
+            raise ConfigurationError("CLERK_JWKS_URL is required for auth")
+        if not self.clerk_jwks_url.startswith("https://"):
+            raise ConfigurationError("CLERK_JWKS_URL must use HTTPS")
+        if not self.clerk_issuer:
+            raise ConfigurationError("CLERK_ISSUER is required for auth")
+        if not self.clerk_issuer.startswith("https://"):
+            raise ConfigurationError("CLERK_ISSUER must use HTTPS")
+
+    def require_clerk_management(self) -> None:
+        self.require_clerk_auth()
+        if not self.clerk_secret_key:
+            raise ConfigurationError("CLERK_SECRET_KEY is required for account management")
+        if not self.clerk_backend_api_url.startswith("https://"):
+            raise ConfigurationError("CLERK_BACKEND_API_URL must use HTTPS")
+
+    def require_session_auth(self) -> None:
+        if len(self.session_signing_secret.encode("utf-8")) < 32:
+            raise ConfigurationError(
+                "ANKE_SESSION_SIGNING_SECRET must contain at least 32 bytes"
+            )
 
     def require_cosmos(self) -> None:
         missing = [
@@ -124,8 +154,3 @@ class Settings:
 
 def get_settings() -> Settings:
     return Settings.from_environment()
-
-
-def get_firebase_credentials_json() -> str:
-    """Return a protected Firebase credential payload without logging it."""
-    return os.getenv("ANKE_FIREBASE_CREDENTIALS_JSON", "").strip()

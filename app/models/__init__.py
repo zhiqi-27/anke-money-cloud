@@ -45,6 +45,7 @@ from app.models.agent import (
     AgentScope,
     OperationSource,
 )
+from app.models.auth import AnkeSessionResponse, ProfileUpdateRequest
 
 __all__ = [
     "Actor",
@@ -88,4 +89,6 @@ __all__ = [
     "AgentPrincipal",
     "AgentScope",
     "OperationSource",
+    "AnkeSessionResponse",
+    "ProfileUpdateRequest",
 ]

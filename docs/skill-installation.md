@@ -2,7 +2,7 @@
 
 The Skill is installed in the user's Agent host. It contains instructions and
 the Remote MCP dependency only; it never contains an Anke Money access token,
-Firebase credential, Cosmos credential, or household ID.
+Apple credential, Anke session token, Cosmos credential, or household ID.
 
 ## Create the connection in Anke Money
 

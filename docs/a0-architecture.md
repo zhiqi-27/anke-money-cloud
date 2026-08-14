@@ -33,9 +33,10 @@ dual-write or mode-toggle rollback.
 
 ## A0-03 · Identity and authorization
 
-Firebase Authentication verifies the end-user identity. Firebase UID is not an
-authorization grant and not the ledger partition key. The server resolves the UID
-to server-owned membership and authorization records before any household access.
+Anke Cloud verifies the end-user identity at its Clerk exchange boundary and signs
+its own session token. The Anke user ID in that token is not an authorization grant
+and not the ledger partition key. The server resolves the ID to server-owned
+membership and authorization records before any household access.
 
 Agent Cloud 1.0 has one authenticating owner and one active workspace. Optional
 `memberProfile` records let ledger entries and asset snapshots identify the
@@ -101,10 +102,9 @@ offline retries are safe because mutation IDs are idempotent.
 
 ## A0-07 · Cosmos resource boundary
 
-Development and Production use separate Firebase projects, Function Apps, Cosmos
-accounts, databases, credentials, monitoring, and deployment configuration. They
-may share the Zero24-owned Azure subscription, but not data-plane identities or
-account keys.
+Development and Production use separate Function Apps, Cosmos accounts, databases,
+credentials, monitoring, and deployment configuration. They may share the
+Zero24-owned Azure subscription, but not data-plane identities or account keys.
 
 The primary container is `anke_entities`, partitioned by `/householdId`. Documents
 that must commit atomically are stored in this container and household partition.
@@ -130,8 +130,8 @@ Workspace deletion and legal/privacy erasure override normal retention.
 
 Deployed services use managed identity and least-privilege Cosmos data-plane RBAC.
 Secrets that cannot use managed identity live in Azure Key Vault or protected
-application settings. Local keys and Firebase credentials are ignored files or
-environment variables and never enter Git.
+application settings. The Clerk secret key and Anke session signing secret are
+ignored files or protected environment variables locally and never enter Git.
 
 ## A0-10 · Delivery shape
 
@@ -242,3 +242,24 @@ partition, document, rate-limit, audit, or revocation rule. No stored document o
 financial-data migration is required. Rollback may resume issuing the longer
 full-capability format while retaining both parsers until all compact keys have
 been reset or revoked.
+
+## Approved amendment · 2026-08-14 · Clerk-managed multi-provider authentication
+
+Firebase Authentication is removed from the product. ClerkKit now owns Apple,
+Google, and email-code sign-in on iOS. iOS sends a short-lived Clerk session token
+to `POST /api/v1/auth/clerk/exchange`. Anke Cloud verifies the Clerk JWT signature,
+issuer, optional audience, and expiry, maps the stable Clerk subject to a new Anke
+user ID, and signs its own session token.
+
+The session token is the only credential sent to protected Anke APIs. ClerkKit
+refreshes its short-lived session token; Anke stores its own session token in the
+iOS Keychain with a bounded lifetime. Household membership and account deletion
+remain server-owned. No Firebase user, Firebase token, or old-account data
+migration is retained. A future WeChat provider will use the same
+provider-subject-to-Anke-user mapping and session issuance boundary.
+
+This is a breaking authentication change with no compatibility window because the
+current product has no supported legacy-account contract. Existing Firebase-only
+accounts cannot sign in or recover data through the new product. Rollback requires
+a new dated amendment and a deliberate reintroduction of Firebase; it cannot be
+done by silently accepting old Firebase tokens.

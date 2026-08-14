@@ -1,29 +1,43 @@
+import json
 import unittest
-from unittest.mock import patch
+from datetime import UTC, datetime, timedelta
 
-from firebase_admin import auth
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
-from app.auth.firebase import (
-    FirebaseTokenVerifier,
+from app.auth import (
+    AnkeSessionTokenIssuer,
+    AnkeSessionTokenVerifier,
+    AuthenticatedIdentity,
+    ClerkTokenVerifier,
+    InvalidClerkCredentialError,
     InvalidTokenError,
     extract_bearer_token,
 )
 from app.config import Settings
 
 
-def settings() -> Settings:
-    return Settings(
-        environment="test",
-        firebase_project_id="anke-money-test",
-        firebase_check_revoked=True,
-        cosmos_endpoint="",
-        cosmos_database="anke-money-dev",
-        cosmos_entities_container="anke_entities",
-        cosmos_identities_container="anke_identities",
-        cosmos_key="",
-        cosmos_expected_account_name="",
-        cosmos_allow_smoke_write=False,
-    )
+def settings(**overrides) -> Settings:
+    values = {
+        "environment": "test",
+        "clerk_jwks_url": "https://clerk.example/.well-known/jwks.json",
+        "clerk_issuer": "https://clerk.example",
+        "clerk_audience": "",
+        "clerk_secret_key": "sk_test_" + "s" * 32,
+        "clerk_backend_api_url": "https://api.clerk.com",
+        "session_signing_secret": "s" * 32,
+        "session_ttl_seconds": 3600,
+        "cosmos_endpoint": "",
+        "cosmos_database": "anke-money-dev",
+        "cosmos_entities_container": "anke_entities",
+        "cosmos_identities_container": "anke_identities",
+        "cosmos_key": "",
+        "cosmos_expected_account_name": "",
+        "cosmos_allow_smoke_write": False,
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 class BearerTokenTest(unittest.TestCase):
@@ -37,70 +51,96 @@ class BearerTokenTest(unittest.TestCase):
                     extract_bearer_token(authorization)
 
 
-class FirebaseTokenVerifierTest(unittest.TestCase):
-    def test_returns_uid_from_verified_claims(self):
-        verifier = FirebaseTokenVerifier(settings())
-        firebase_app = object()
-        with (
-            patch.object(verifier, "_firebase_app", return_value=firebase_app),
-            patch(
-                "app.auth.firebase.auth.verify_id_token",
-                return_value={"uid": "firebase-user-1"},
-            ) as verify,
-        ):
-            identity = verifier.verify_bearer_token("Bearer signed-token")
-
-        self.assertEqual(identity.uid, "firebase-user-1")
-        verify.assert_called_once_with(
-            "signed-token",
-            app=firebase_app,
-            check_revoked=True,
+class AnkeSessionTokenTest(unittest.TestCase):
+    def test_round_trip_preserves_anke_identity(self):
+        now = datetime.now(UTC)
+        identity = AuthenticatedIdentity(
+            uid="apple:subject-1",
+            provider="apple",
+            provider_subject="subject-1",
+            display_name="Anke User",
+            email="relay@example.appleid.com",
+        )
+        issuer = AnkeSessionTokenIssuer(settings())
+        token, expires_at = issuer.issue(identity, now=now)
+        verified = AnkeSessionTokenVerifier(settings()).verify_bearer_token(
+            f"Bearer {token}"
         )
 
-    def test_redacts_underlying_verification_failure(self):
-        verifier = FirebaseTokenVerifier(settings())
-        with (
-            patch.object(verifier, "_firebase_app", return_value=object()),
-            patch(
-                "app.auth.firebase.auth.verify_id_token",
-                side_effect=ValueError("secret token detail"),
+        self.assertEqual(verified, identity)
+        self.assertEqual(expires_at, now + timedelta(seconds=3600))
+
+    def test_rejects_expired_session(self):
+        now = datetime(2026, 8, 13, tzinfo=UTC)
+        issuer = AnkeSessionTokenIssuer(settings(session_ttl_seconds=300))
+        token, _ = issuer.issue(
+            AuthenticatedIdentity(
+                uid="apple:subject-1",
+                provider_subject="subject-1",
             ),
-        ):
-            with self.assertLogs("app.auth.firebase", level="WARNING") as logs:
-                with self.assertRaisesRegex(InvalidTokenError, "Firebase token is invalid"):
-                    verifier.verify_bearer_token("Bearer signed-token")
-
-        self.assertNotIn("secret token detail", " ".join(logs.output))
-
-    def test_rejects_expired_and_revoked_firebase_tokens(self):
-        failures = (
-            auth.ExpiredIdTokenError("expired token detail", ValueError("expired")),
-            auth.RevokedIdTokenError("revoked token detail"),
+            now=now - timedelta(hours=1),
         )
-        for failure in failures:
-            with self.subTest(error_type=type(failure).__name__):
-                verifier = FirebaseTokenVerifier(settings())
-                with (
-                    patch.object(verifier, "_firebase_app", return_value=object()),
-                    patch(
-                        "app.auth.firebase.auth.verify_id_token",
-                        side_effect=failure,
-                    ),
-                ):
-                    with self.assertRaisesRegex(
-                        InvalidTokenError,
-                        "Firebase token is invalid",
-                    ):
-                        verifier.verify_bearer_token("Bearer signed-token")
 
-    def test_rejects_verified_claims_without_uid(self):
-        verifier = FirebaseTokenVerifier(settings())
-        with (
-            patch.object(verifier, "_firebase_app", return_value=object()),
-            patch("app.auth.firebase.auth.verify_id_token", return_value={}),
-        ):
-            with self.assertRaises(InvalidTokenError):
-                verifier.verify_bearer_token("Bearer signed-token")
+        with self.assertRaises(InvalidTokenError):
+            AnkeSessionTokenVerifier(settings(session_ttl_seconds=300)).verify_bearer_token(
+                f"Bearer {token}"
+            )
+
+
+class ClerkTokenVerifierTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cls.jwk = json.loads(RSAAlgorithm.to_jwk(cls.private_key.public_key()))
+        cls.jwk["kid"] = "test-key"
+
+    def _token(self, subject="clerk-subject"):
+        now = datetime.now(UTC)
+        return jwt.encode(
+            {
+                "iss": "https://clerk.example",
+                "iat": int(now.timestamp()),
+                "exp": int((now + timedelta(minutes=5)).timestamp()),
+                "sub": subject,
+                "email_address": "user@example.com",
+                "first_name": "Anke",
+                "last_name": "User",
+            },
+            self.private_key,
+            algorithm="RS256",
+            headers={"kid": "test-key"},
+        )
+
+    def test_verifies_clerk_claims_and_namespaces_subject(self):
+        verifier = ClerkTokenVerifier(
+            settings(),
+            jwks_loader=lambda: {"keys": [self.jwk]},
+        )
+        identity = verifier.verify(self._token())
+
+        self.assertEqual(identity.uid, "clerk:clerk-subject")
+        self.assertEqual(identity.provider, "clerk")
+        self.assertEqual(identity.email, "user@example.com")
+        self.assertEqual(identity.display_name, "Anke User")
+
+    def test_rejects_wrong_issuer(self):
+        verifier = ClerkTokenVerifier(
+            settings(),
+            jwks_loader=lambda: {"keys": [self.jwk]},
+        )
+        token = jwt.encode(
+            {
+                "iss": "https://other.example",
+                "iat": int(datetime.now(UTC).timestamp()),
+                "exp": int((datetime.now(UTC) + timedelta(minutes=5)).timestamp()),
+                "sub": "clerk-subject",
+            },
+            self.private_key,
+            algorithm="RS256",
+            headers={"kid": "test-key"},
+        )
+        with self.assertRaises(InvalidClerkCredentialError):
+            verifier.verify(token)
 
 
 if __name__ == "__main__":

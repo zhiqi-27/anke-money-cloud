@@ -29,7 +29,7 @@ class AgentSecurityTest(unittest.TestCase):
     def setUp(self):
         self.storage = InMemoryHouseholdStorage()
         self.cloud = CloudService(self.storage)
-        self.identity = AuthenticatedIdentity(uid="firebase-security-owner")
+        self.identity = AuthenticatedIdentity(uid="apple:security-owner")
         bootstrap = self.cloud.bootstrap(
             self.identity,
             DeviceRegistration(

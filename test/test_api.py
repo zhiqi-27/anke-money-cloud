@@ -7,9 +7,15 @@ from fastapi.testclient import TestClient
 
 from app.auth import AuthenticatedIdentity, InvalidTokenError
 from app.config import ConfigurationError
-from app.dependencies import agent_access_service, cloud_service
+from app.dependencies import (
+    agent_access_service,
+    auth_service,
+    cloud_service,
+    clerk_management_service,
+)
 from app.main import fastapi_app
 from app.models import (
+    AnkeSessionResponse,
     MigrationManifest,
     MigrationSourceMode,
     MigrationUploadRequest,
@@ -23,12 +29,36 @@ class FakeTokenVerifier:
     def verify_bearer_token(self, authorization: str) -> AuthenticatedIdentity:
         if authorization != "Bearer valid-test-token":
             raise InvalidTokenError("invalid")
-        return AuthenticatedIdentity(uid="firebase-user-1")
+        return AuthenticatedIdentity(
+            uid="clerk:subject-1",
+            provider="clerk",
+            provider_subject="subject-1",
+        )
 
 
 class MisconfiguredTokenVerifier:
     def verify_bearer_token(self, authorization: str) -> AuthenticatedIdentity:
         raise ConfigurationError("missing secret detail")
+
+
+class FakeClerkManagement:
+    def delete_user(self, provider_subject: str):
+        if provider_subject != "subject-1":
+            raise AssertionError("unexpected Clerk subject")
+
+
+class FakeClerkAuthService:
+    def sign_in_with_clerk(self, authorization: str) -> AnkeSessionResponse:
+        if authorization != "Bearer valid-clerk-token":
+            raise AssertionError("unexpected Clerk authorization")
+        return AnkeSessionResponse(
+            access_token="anke-session-token",
+            expires_at="2026-08-14T12:00:00Z",
+            uid="clerk:subject-1",
+            provider="clerk",
+            display_name="Anke User",
+            email="user@example.com",
+        )
 
 
 class ApiContractTest(unittest.TestCase):
@@ -41,7 +71,9 @@ class ApiContractTest(unittest.TestCase):
     @staticmethod
     def activate_empty_workspace(storage: InMemoryHouseholdStorage, device_id: str):
         service = CloudService(storage)
-        identity = AuthenticatedIdentity(uid="firebase-user-1")
+        identity = AuthenticatedIdentity(
+            uid="clerk:subject-1", provider="clerk", provider_subject="subject-1"
+        )
         digest = hashlib.sha256(b"[]").hexdigest()
         session_id = uuid4()
         service.stage_migration(
@@ -66,7 +98,7 @@ class ApiContractTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
         self.assertNotIn("cosmos", response.text.lower())
-        self.assertNotIn("firebase", response.text.lower())
+        self.assertNotIn("token", response.text.lower())
 
     def test_openapi_includes_health_and_protected_identity_route(self):
         response = self.client.get("/openapi.json")
@@ -295,7 +327,28 @@ class ApiContractTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"uid": "firebase-user-1"})
+        self.assertEqual(
+            response.json(),
+            {
+                "uid": "clerk:subject-1",
+                "provider": "clerk",
+                "displayName": None,
+                "email": None,
+            },
+        )
+
+    def test_clerk_exchange_returns_an_anke_session(self):
+        fastapi_app.dependency_overrides[auth_service] = lambda: FakeClerkAuthService()
+
+        response = self.client.post(
+            "/api/v1/auth/clerk/exchange",
+            headers={"Authorization": "Bearer valid-clerk-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["accessToken"], "anke-session-token")
+        self.assertEqual(response.json()["uid"], "clerk:subject-1")
+        self.assertEqual(response.json()["provider"], "clerk")
 
     def test_account_deletion_erases_household_and_is_idempotent(self):
         storage = InMemoryHouseholdStorage()
@@ -308,14 +361,15 @@ class ApiContractTest(unittest.TestCase):
             "appVersion": "0.1.0",
         }
 
+        fastapi_app.dependency_overrides[clerk_management_service] = lambda: FakeClerkManagement()
         with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
             self.assertEqual(self.client.post("/api/v1/bootstrap", headers=headers, json=body).status_code, 200)
-            first = self.client.delete("/api/v1/account", headers=headers)
-            second = self.client.delete("/api/v1/account", headers=headers)
+            first = self.client.request("DELETE", "/api/v1/account", headers=headers)
+            second = self.client.request("DELETE", "/api/v1/account", headers=headers)
 
         self.assertEqual(first.status_code, 204)
         self.assertEqual(second.status_code, 204)
-        self.assertIsNone(storage.household_for_uid("firebase-user-1"))
+        self.assertIsNone(storage.household_for_uid("clerk:subject-1"))
 
     def test_azure_functions_entry_imports_without_credentials(self):
         import function_app

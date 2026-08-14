@@ -36,7 +36,7 @@ def make_request(**overrides) -> LedgerEntryCreate:
 class LedgerDocumentModelTest(unittest.TestCase):
     def test_builds_operation_entry_and_audit_in_one_partition(self):
         request = make_request()
-        actor = Actor(type=ActorType.user, id="firebase-user-1")
+        actor = Actor(type=ActorType.user, id="apple:subject-1")
         operation, entry, audit = build_ledger_transaction_documents(
             request,
             actor,

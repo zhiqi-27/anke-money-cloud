@@ -73,7 +73,7 @@ class CloudSyncTest(unittest.TestCase):
     def setUp(self):
         self.storage = InMemoryHouseholdStorage()
         self.service = CloudService(self.storage)
-        self.identity = AuthenticatedIdentity(uid="firebase-owner-1")
+        self.identity = AuthenticatedIdentity(uid="apple:owner-1")
         self.device_id = uuid4()
         self.bootstrap = self.service.bootstrap(self.identity, registration(self.device_id))
 
