@@ -96,6 +96,35 @@ def _validate_entity_payload(
             raise ValueError("Income ledger entries cannot have channelId")
         _validate_optional_string(payload, "note")
         _validate_optional_string(payload, "memberProfileId")
+        allocation_values = (
+            payload.get("allocationSourceId"),
+            payload.get("allocationIndex"),
+            payload.get("allocationCount"),
+            payload.get("allocationStartMonth"),
+        )
+        if any(value is not None for value in allocation_values):
+            if any(value is None for value in allocation_values):
+                raise ValueError("Allocation fields must be supplied together")
+            if direction != "expense" or payload.get("kind") != "transaction":
+                raise ValueError("Only transaction expenses can be allocations")
+            try:
+                UUID(str(payload["allocationSourceId"]))
+            except ValueError as error:
+                raise ValueError("allocationSourceId must be a UUID") from error
+            allocation_index = _require_integer(payload, "allocationIndex")
+            allocation_count = _require_integer(payload, "allocationCount")
+            if allocation_count < 2 or allocation_count > 120:
+                raise ValueError("allocationCount must be between 2 and 120")
+            if allocation_index < 1 or allocation_index > allocation_count:
+                raise ValueError("allocationIndex must be within allocationCount")
+            try:
+                allocation_start = date.fromisoformat(
+                    _require_string(payload, "allocationStartMonth")
+                )
+            except ValueError as error:
+                raise ValueError("allocationStartMonth must be an ISO-8601 date") from error
+            if allocation_start.day != 1:
+                raise ValueError("allocationStartMonth must be the first day of a month")
     elif entity_type is SyncEntityType.asset_account:
         _require_string(payload, "name")
         _require_integer(payload, "amountInFen")
@@ -178,8 +207,11 @@ class SyncMutation(APIModel):
             raise ValueError("Delete mutations cannot include payload")
         if self.action is not MutationAction.delete and not self.payload:
             raise ValueError("Create and update mutations require payload")
-        if self.entity_type is SyncEntityType.ledger_entry and self.action is not MutationAction.create:
-            raise ValueError("Ledger entries are append-only")
+        if self.entity_type is SyncEntityType.ledger_entry and self.action in {
+            MutationAction.update,
+            MutationAction.delete,
+        }:
+            raise ValueError("Ledger entries cannot be updated or deleted")
         if self.payload:
             _validate_entity_payload(self.entity_type, self.payload)
         return self

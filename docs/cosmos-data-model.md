@@ -55,6 +55,10 @@ records; client clocks never determine acceptance order.
 - `channelId`: required for expense; absent for income
 - `categoryId`: stable reference identifier
 - `amountInFen`: positive signed 64-bit integer; currency is never floating point
+- `allocationSourceId`, `allocationIndex`, `allocationCount`, and
+  `allocationStartMonth`: optional all-or-none metadata for a read-only monthly
+  allocation derived from an original transaction expense. The original entry
+  remains stored; clients exclude it from ledger totals while allocations exist.
 - `note`: optional user text with API length limit
 
 A new `operationId` always creates a new ledger entry even if every business field

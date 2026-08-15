@@ -250,7 +250,7 @@ class CloudSyncTest(unittest.TestCase):
         ):
             self.service.stage_migration(self.identity, request)
 
-    def test_money_rejects_float_and_ledger_update_is_forbidden(self):
+    def test_money_rejects_float_and_ledger_mutations_are_forbidden(self):
         with self.assertRaises(ValidationError):
             mutation(self.device_id, payload=ledger_payload(12.5))
         with self.assertRaises(ValidationError):
@@ -258,6 +258,56 @@ class CloudSyncTest(unittest.TestCase):
                 self.device_id,
                 action=MutationAction.update,
                 base_revision=1,
+            )
+        with self.assertRaises(ValidationError):
+            mutation(
+                self.device_id,
+                action=MutationAction.delete,
+                base_revision=1,
+                payload=None,
+            )
+
+    def test_allocation_metadata_round_trips(self):
+        self.activate_empty_workspace()
+        source_id = uuid4()
+        allocation_id = uuid4()
+        payload = {
+            **ledger_payload(100),
+            "allocationSourceId": str(source_id),
+            "allocationIndex": 2,
+            "allocationCount": 12,
+            "allocationStartMonth": "2026-08-01",
+        }
+        created = mutation(
+            self.device_id,
+            entity_id=str(allocation_id),
+            payload=payload,
+        )
+        result = self.service.push(
+            self.identity,
+            SyncPushRequest(device_id=self.device_id, mutations=[created]),
+        )
+        self.assertEqual(result.results[0].status, MutationStatus.accepted)
+        pulled = self.service.pull(self.identity, None, 10)
+        self.assertEqual(pulled.changes[0].payload["allocationSourceId"], str(source_id))
+        self.assertEqual(pulled.changes[0].payload["allocationIndex"], 2)
+
+    def test_allocation_metadata_must_be_complete_and_consistent(self):
+        with self.assertRaises(ValidationError):
+            mutation(
+                self.device_id,
+                payload={**ledger_payload(100), "allocationIndex": 1},
+            )
+        with self.assertRaises(ValidationError):
+            mutation(
+                self.device_id,
+                payload={
+                    **ledger_payload(100),
+                    "allocationSourceId": str(uuid4()),
+                    "allocationIndex": 13,
+                    "allocationCount": 12,
+                    "allocationStartMonth": "2026-08-01",
+                },
             )
 
     def test_every_sync_entity_rejects_payloads_the_ios_replica_cannot_apply(self):
