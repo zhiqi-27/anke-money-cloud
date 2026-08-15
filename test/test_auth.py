@@ -2,6 +2,7 @@ import json
 import unittest
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
@@ -16,6 +17,7 @@ from app.auth import (
     extract_bearer_token,
 )
 from app.config import Settings
+from app.services import ClerkManagementClient, ClerkManagementError
 
 
 def settings(**overrides) -> Settings:
@@ -141,6 +143,38 @@ class ClerkTokenVerifierTest(unittest.TestCase):
         )
         with self.assertRaises(InvalidClerkCredentialError):
             verifier.verify(token)
+
+
+class ClerkManagementClientTest(unittest.TestCase):
+    def _client(self, handler) -> ClerkManagementClient:
+        transport = httpx.MockTransport(handler)
+        return ClerkManagementClient(
+            settings(),
+            client=httpx.Client(transport=transport),
+        )
+
+    def test_delete_user_uses_backend_contract_headers(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, "DELETE")
+            self.assertEqual(request.url.path, "/v1/users/user_123")
+            self.assertEqual(request.headers["content-type"], "application/json")
+            self.assertTrue(request.headers["authorization"].startswith("Bearer sk_test_"))
+            return httpx.Response(200, json={"object": "user", "deleted": True})
+
+        self._client(handler).delete_user("user_123")
+
+    def test_delete_user_is_idempotent_when_clerk_user_is_missing(self):
+        self._client(
+            lambda _: httpx.Response(404, json={"errors": [{"code": "resource_not_found"}]})
+        ).delete_user("user_missing")
+
+    def test_delete_user_rejects_other_clerk_failures(self):
+        client = self._client(
+            lambda _: httpx.Response(401, json={"errors": [{"code": "authentication_invalid"}]})
+        )
+
+        with self.assertRaises(ClerkManagementError):
+            client.delete_user("user_123")
 
 
 if __name__ == "__main__":

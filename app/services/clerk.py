@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-from typing import Callable
-from urllib.error import HTTPError
+import logging
+from typing import Protocol
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+
+import httpx
 
 from app.config import Settings
 
 
+logger = logging.getLogger(__name__)
+
+
 class ClerkManagementError(RuntimeError):
     """Raised when Clerk account management cannot be completed."""
+
+
+class ClerkHTTPClient(Protocol):
+    def delete(self, url: str, **kwargs) -> httpx.Response: ...
 
 
 class ClerkManagementClient:
@@ -17,10 +25,10 @@ class ClerkManagementClient:
         self,
         settings: Settings,
         *,
-        opener: Callable[..., object] = urlopen,
+        client: ClerkHTTPClient | None = None,
     ):
         self._settings = settings
-        self._opener = opener
+        self._client = client
 
     def delete_user(self, provider_subject: str) -> None:
         self._settings.require_clerk_management()
@@ -28,24 +36,29 @@ class ClerkManagementClient:
             f"{self._settings.clerk_backend_api_url.rstrip('/')}/v1/users/"
             f"{quote(provider_subject, safe='')}"
         )
-        request = Request(
-            endpoint,
-            method="DELETE",
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self._settings.clerk_secret_key}",
-            },
-        )
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._settings.clerk_secret_key}",
+        }
         try:
-            with self._opener(request, timeout=10) as response:
-                status_code = getattr(response, "status", 200)
-                if not 200 <= status_code < 300:
-                    raise ClerkManagementError("Clerk account deletion failed")
-        except HTTPError as exc:
-            if exc.code == 404:
+            if self._client is not None:
+                response = self._client.delete(endpoint, headers=headers, timeout=10)
+            else:
+                with httpx.Client(timeout=10) as client:
+                    response = client.delete(endpoint, headers=headers)
+            if response.status_code == 404:
                 return
-            raise ClerkManagementError("Clerk account deletion failed") from exc
-        except ClerkManagementError:
-            raise
-        except Exception as exc:
+            if 200 <= response.status_code < 300:
+                return
+            logger.warning(
+                "Clerk user deletion rejected: status_code=%s",
+                response.status_code,
+            )
+            raise ClerkManagementError("Clerk account deletion failed")
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Clerk user deletion transport failed: error_type=%s",
+                type(exc).__name__,
+            )
             raise ClerkManagementError("Clerk account deletion failed") from exc
