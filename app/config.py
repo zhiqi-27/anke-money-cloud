@@ -54,6 +54,10 @@ class Settings:
     cosmos_key: str
     cosmos_expected_account_name: str
     cosmos_allow_smoke_write: bool
+    apns_team_id: str = ""
+    apns_key_id: str = ""
+    apns_private_key: str = ""
+    apns_topic: str = "app.ankemoney.ios"
     agent_requests_per_minute: int = 120
     agent_failed_auth_threshold: int = 5
     mcp_allowed_hosts: tuple[str, ...] = (
@@ -98,6 +102,12 @@ class Settings:
             cosmos_allow_smoke_write=_boolean(
                 "ANKE_COSMOS_ALLOW_SMOKE_WRITE", default=False
             ),
+            apns_team_id=os.getenv("ANKE_APNS_TEAM_ID", "").strip(),
+            apns_key_id=os.getenv("ANKE_APNS_KEY_ID", "").strip(),
+            apns_private_key=os.getenv("ANKE_APNS_PRIVATE_KEY", "").strip(),
+            apns_topic=os.getenv(
+                "ANKE_APNS_TOPIC", "app.ankemoney.ios"
+            ).strip(),
             agent_requests_per_minute=_integer(
                 "ANKE_AGENT_REQUESTS_PER_MINUTE", 120, minimum=10, maximum=10_000
             ),
@@ -150,6 +160,15 @@ class Settings:
         ]
         if missing:
             raise ConfigurationError(f"Missing Cosmos settings: {', '.join(missing)}")
+
+    @property
+    def apns_configured(self) -> bool:
+        return bool(
+            self.apns_team_id
+            and self.apns_key_id
+            and self.apns_private_key
+            and self.apns_topic
+        )
 
 
 def get_settings() -> Settings:

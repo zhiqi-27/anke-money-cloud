@@ -263,3 +263,17 @@ current product has no supported legacy-account contract. Existing Firebase-only
 accounts cannot sign in or recover data through the new product. Rollback requires
 a new dated amendment and a deliberate reintroduction of Firebase; it cannot be
 done by silently accepting old Firebase tokens.
+
+## Approved amendment · 2026-08-17 · Change-driven client synchronization
+
+An authenticated iOS device registers its APNs token under its existing household
+partition. The `anke_entities` Change Feed trigger groups changed synchronized
+entities by household and sends one collapsed background notification per household.
+The notification is a data-free hint; clients still authorize and pull changes from
+the canonical sync API, so APNs is neither a data transport nor a new writer.
+
+The trigger uses a separately provisioned lease container and never creates Azure
+resources at runtime. If APNs or background delivery is unavailable, active clients
+fall back to the existing cursor pull every 30 seconds and BGAppRefresh provides an
+additional best-effort opportunity. Rollback disables the Change Feed trigger and
+token registration route; ordered push/pull and cursor compatibility are unchanged.

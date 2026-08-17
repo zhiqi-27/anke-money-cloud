@@ -34,6 +34,7 @@ from app.models import (
     AuditListResponse,
     BootstrapResponse,
     DeviceRegistration,
+    PushTokenRegistration,
     MigrationActivateRequest,
     MigrationResponse,
     MigrationUploadRequest,
@@ -51,7 +52,7 @@ from app.services import (
     ClerkManagementError,
     WorkspaceNotActiveError,
 )
-from app.services.cloud import MembershipRequiredError
+from app.services.cloud import DeviceRegistrationRequiredError, MembershipRequiredError
 from app.mcp_server import mcp_asgi_app
 
 
@@ -265,6 +266,25 @@ async def bootstrap(
     service: CloudService = Depends(cloud_service),
 ) -> BootstrapResponse:
     return service.bootstrap(identity, registration)
+
+
+@fastapi_app.put(
+    "/api/v1/devices/push-token",
+    tags=["cloud"],
+    summary="Register or refresh this device's APNs token",
+)
+async def register_push_token(
+    registration: PushTokenRegistration,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: CloudService = Depends(cloud_service),
+) -> dict:
+    try:
+        service.register_push_token(identity, registration)
+    except MembershipRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Bootstrap required") from exc
+    except DeviceRegistrationRequiredError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Device bootstrap required") from exc
+    return {}
 
 
 @fastapi_app.post(

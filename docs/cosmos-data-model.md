@@ -125,6 +125,20 @@ legacy `agentConnection` credential documents in that household partition.
 Rate-limit and suspicious-authentication events are ordinary append-only redacted
 audit documents in the same household partition.
 
+### Push device
+
+`pushDevice` uses the deterministic ID `push-device:{deviceId}` in `anke_entities`
+and the existing `/householdId` partition. It stores the APNs token, sandbox or
+production environment, bundle topic, app version, owner UID, revision timestamps,
+and nullable `disabledAt`. Re-registration replaces the token for that device;
+APNs `Unregistered`, `BadDeviceToken`, and `DeviceTokenNotForTopic` responses disable
+the document without deleting audit or financial data.
+
+The Change Feed processor uses a separate `anke_sync_leases` container partitioned
+by `/id`. It contains only Azure Functions lease/checkpoint documents and no Anke
+financial or identity records. Infrastructure provisions it before deployment;
+runtime code does not create it.
+
 ### Tombstones and retention
 
 Deleted synchronized data stores actor, accepted mutation ID, server time, revision,

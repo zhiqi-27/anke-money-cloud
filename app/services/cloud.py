@@ -20,6 +20,7 @@ from app.models import (
     AuditListResponse,
     BootstrapResponse,
     DeviceRegistration,
+    PushTokenRegistration,
     MigrationResponse,
     MigrationUploadRequest,
     MutationStatus,
@@ -40,6 +41,10 @@ class WorkspaceNotActiveError(RuntimeError):
     pass
 
 
+class DeviceRegistrationRequiredError(RuntimeError):
+    pass
+
+
 class CloudService:
     def __init__(self, storage: HouseholdStorage):
         self._storage = storage
@@ -50,6 +55,24 @@ class CloudService:
         registration: DeviceRegistration,
     ) -> BootstrapResponse:
         return self._storage.bootstrap_owner(identity.uid, registration)
+
+    def register_push_token(
+        self,
+        identity: AuthenticatedIdentity,
+        registration: PushTokenRegistration,
+    ) -> None:
+        household_id = self._required_household(identity.uid)
+        device = self._storage.read_household_document(
+            household_id, str(registration.device_id)
+        )
+        if device is None or device.get("entityType") != "device":
+            raise DeviceRegistrationRequiredError("Bootstrap this device first")
+        self._storage.upsert_push_token(
+            household_id,
+            identity.uid,
+            registration,
+            datetime.now(UTC),
+        )
 
     def delete_account(self, identity: AuthenticatedIdentity) -> int:
         """Erase the owner identity membership and every household document.

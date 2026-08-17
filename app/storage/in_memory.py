@@ -19,6 +19,7 @@ from app.models import (
     AuditEventView,
     BootstrapResponse,
     DeviceRegistration,
+    PushTokenRegistration,
     LedgerEntryCreate,
     LedgerEntryDocument,
     MigrationResponse,
@@ -102,6 +103,58 @@ class InMemoryHouseholdStorage:
                 ) + 1,
                 workspace_status=household["status"],
             )
+
+    def upsert_push_token(
+        self,
+        household_id: str,
+        owner_uid: str,
+        registration: PushTokenRegistration,
+        now: datetime,
+    ) -> None:
+        with self._lock:
+            document_id = f"push-device:{registration.device_id}"
+            existing = self._items.get((household_id, document_id))
+            timestamp = now.isoformat().replace("+00:00", "Z")
+            self._items[(household_id, document_id)] = {
+                "id": document_id,
+                "entityType": "pushDevice",
+                "householdId": household_id,
+                "deviceId": str(registration.device_id),
+                "ownerUid": owner_uid,
+                "token": registration.token,
+                "environment": registration.environment,
+                "topic": registration.topic,
+                "appVersion": registration.app_version,
+                "disabledAt": None,
+                "schemaVersion": 1,
+                "revision": int((existing or {}).get("revision", 0)) + 1,
+                "createdAt": (existing or {}).get("createdAt", timestamp),
+                "updatedAt": timestamp,
+            }
+
+    def active_push_tokens(self, household_id: str) -> list[dict]:
+        with self._lock:
+            return [
+                dict(document)
+                for (partition, _), document in self._items.items()
+                if partition == household_id
+                and document.get("entityType") == "pushDevice"
+                and document.get("disabledAt") is None
+            ]
+
+    def disable_push_token(
+        self,
+        household_id: str,
+        token_document_id: str,
+        now: datetime,
+    ) -> None:
+        with self._lock:
+            document = self._items.get((household_id, token_document_id))
+            if document is None or document.get("entityType") != "pushDevice":
+                return
+            document["disabledAt"] = now.isoformat().replace("+00:00", "Z")
+            document["updatedAt"] = document["disabledAt"]
+            document["revision"] = int(document.get("revision", 0)) + 1
 
     def ensure_identity(self, identity: AuthenticatedIdentity) -> None:
         with self._lock:

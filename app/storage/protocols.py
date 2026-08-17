@@ -11,6 +11,7 @@ from app.models import (
     AuditEventView,
     BootstrapResponse,
     DeviceRegistration,
+    PushTokenRegistration,
     LedgerEntryCreate,
     LedgerEntryDocument,
     MigrationResponse,
@@ -142,6 +143,23 @@ class HouseholdStorage(Protocol):
         uid: str,
         registration: DeviceRegistration,
     ) -> BootstrapResponse: ...
+
+    def upsert_push_token(
+        self,
+        household_id: str,
+        owner_uid: str,
+        registration: PushTokenRegistration,
+        now: datetime,
+    ) -> None: ...
+
+    def active_push_tokens(self, household_id: str) -> list[dict]: ...
+
+    def disable_push_token(
+        self,
+        household_id: str,
+        token_document_id: str,
+        now: datetime,
+    ) -> None: ...
 
     def household_for_uid(self, uid: str) -> str | None: ...
 

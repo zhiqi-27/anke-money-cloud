@@ -39,6 +39,8 @@ Clerk-backed Anke session contract; they do not validate the current implementat
 | 2026-08-13 | Local Agent API Key replacement | Single long-lived full-capability API Key, hash-only persistence, plaintext-once response, reset/revoke invalidation, legacy credential rejection/removal, direct HTTP plus Remote MCP, rate/anomaly controls, and offline merge | Python 3.12 virtual-environment service, API, MCP, model, in-memory, Cosmos adapter, and sync suite | Passed; 76 tests, 0 failures; no Development deployment or live-data mutation |
 | 2026-08-13 | Development Agent API Key deployment | Exact 26-file runtime package from commit `7b71c0b`; Azure Cloud Shell ZIP deployment to `anke-money-dev/func-anke-money-dev-zq01`; public health, OpenAPI, removed-route, and unauthenticated-boundary checks | Passed; package SHA-256 `c734f7f10eb75d1b8485d275b726c75d43e5ec209f37d6d4bacfe098f9048ed9`; `/ping` returned `environment=dev`; OpenAPI exposed only `/api/v1/agent-api-key`; its GET/POST returned 401 without credentials; old connection/refresh routes returned 404; unauthenticated `/mcp` returned 401; no authenticated request or financial-data mutation was performed |
 
+| 2026-08-17 | Local change-driven synchronization | Authenticated APNs token registration, household persistence, refresh/disable lifecycle, data-free background payload, sandbox routing, OpenAPI route, Change Feed trigger import/discovery, compile, and diff checks | Passed; 85 tests plus 23 subtests, 0 failures; Functions metadata exposes HTTP, retention timer, and Cosmos Change Feed triggers; no deployment, APNs request, Azure resource creation, or real user data access |
+
 ## Remaining evidence boundaries
 
 - Clerk provider flows, a Clerk-issued credential against the current deployed Anke

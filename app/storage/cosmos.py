@@ -30,6 +30,7 @@ from app.models import (
     AuditEventView,
     BootstrapResponse,
     DeviceRegistration,
+    PushTokenRegistration,
     LedgerEntryCreate,
     LedgerEntryDocument,
     MigrationResponse,
@@ -243,6 +244,64 @@ class CosmosHouseholdStorage:
     def household_for_uid(self, uid: str) -> str | None:
         identity = self._read_identity(uid)
         return identity.get("householdId") if identity else None
+
+    def upsert_push_token(
+        self,
+        household_id: str,
+        owner_uid: str,
+        registration: PushTokenRegistration,
+        now: datetime,
+    ) -> None:
+        document_id = f"push-device:{registration.device_id}"
+        existing = self.read_household_document(household_id, document_id)
+        timestamp = self._timestamp(now)
+        document = {
+            "id": document_id,
+            "entityType": "pushDevice",
+            "householdId": household_id,
+            "deviceId": str(registration.device_id),
+            "ownerUid": owner_uid,
+            "token": registration.token,
+            "environment": registration.environment,
+            "topic": registration.topic,
+            "appVersion": registration.app_version,
+            "disabledAt": None,
+            "schemaVersion": 1,
+            "revision": int((existing or {}).get("revision", 0)) + 1,
+            "createdAt": (existing or {}).get("createdAt", timestamp),
+            "updatedAt": timestamp,
+        }
+        self._entities_container().upsert_item(body=document)
+
+    def active_push_tokens(self, household_id: str) -> list[dict]:
+        return list(self._entities_container().query_items(
+            query=(
+                "SELECT * FROM c WHERE c.householdId = @householdId "
+                "AND c.entityType = 'pushDevice' "
+                "AND (NOT IS_DEFINED(c.disabledAt) OR IS_NULL(c.disabledAt))"
+            ),
+            parameters=[{"name": "@householdId", "value": household_id}],
+            partition_key=household_id,
+        ))
+
+    def disable_push_token(
+        self,
+        household_id: str,
+        token_document_id: str,
+        now: datetime,
+    ) -> None:
+        document = self.read_household_document(household_id, token_document_id)
+        if document is None or document.get("entityType") != "pushDevice":
+            return
+        updated = dict(document)
+        updated["disabledAt"] = self._timestamp(now)
+        updated["updatedAt"] = updated["disabledAt"]
+        updated["revision"] = int(updated.get("revision", 0)) + 1
+        self._entities_container().replace_item(
+            item=token_document_id,
+            body=updated,
+            **self._etag_kwargs(document),
+        )
 
     def delete_account_data(self, uid: str) -> int:
         identity = self._read_identity(uid)

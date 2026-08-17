@@ -8,6 +8,6 @@ dependencies:
       value: "anke-money"
       description: "Six Anke Money ledger and asset tools"
       transport: "streamable_http"
-      url: "https://func-anke-money-dev-zq01.azurewebsites.net/mcp"
+      url: "https://func-anke-money-dev-zq01-a0btadd7fsfkc6cj.eastasia-01.azurewebsites.net/mcp"
 policy:
   allow_implicit_invocation: true

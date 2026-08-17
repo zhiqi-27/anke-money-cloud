@@ -169,6 +169,14 @@ class DeviceRegistration(APIModel):
     app_version: str = Field(min_length=1, max_length=40)
 
 
+class PushTokenRegistration(APIModel):
+    device_id: UUID
+    token: str = Field(pattern="^[0-9a-f]{64}$")
+    environment: str = Field(pattern="^(sandbox|production)$")
+    topic: str = Field(min_length=1, max_length=255)
+    app_version: str = Field(min_length=1, max_length=40)
+
+
 class BootstrapResponse(APIModel):
     user_id: str
     household_id: UUID

@@ -109,6 +109,7 @@ class ApiContractTest(unittest.TestCase):
         self.assertIn("/api/v1/me", paths)
         self.assertIn("/api/v1/account", paths)
         self.assertIn("/api/v1/bootstrap", paths)
+        self.assertIn("/api/v1/devices/push-token", paths)
         self.assertIn("/api/v1/sync/push", paths)
         self.assertIn("/api/v1/sync/pull", paths)
         self.assertIn("/api/v1/migrations", paths)
@@ -375,9 +376,13 @@ class ApiContractTest(unittest.TestCase):
         import function_app
 
         self.assertIsNotNone(function_app.app)
-        self.assertIn(
-            "enforce_data_retention",
+        self.assertEqual(
             {item.get_function_name() for item in function_app.app.get_functions()},
+            {
+                "http_app_func",
+                "enforce_data_retention",
+                "notify_devices_of_cloud_changes",
+            },
         )
 
     def test_authenticated_bootstrap_and_sync_routes_never_accept_household_from_client(self):

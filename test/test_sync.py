@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.auth import AuthenticatedIdentity
 from app.models import (
     DeviceRegistration,
+    PushTokenRegistration,
     MigrationItem,
     MigrationManifest,
     MigrationSourceMode,
@@ -104,6 +105,31 @@ class CloudSyncTest(unittest.TestCase):
             {item["entityType"] for item in documents},
             {"user", "household", "device", "connection"},
         )
+
+    def test_push_token_is_persisted_refreshed_and_can_be_disabled(self):
+        request = PushTokenRegistration(
+            device_id=self.device_id,
+            token="ab" * 32,
+            environment="sandbox",
+            topic="app.ankemoney.ios",
+            app_version="0.1.0",
+        )
+
+        self.service.register_push_token(self.identity, request)
+        self.service.register_push_token(
+            self.identity,
+            request.model_copy(update={"app_version": "0.2.0"}),
+        )
+
+        household_id = str(self.bootstrap.household_id)
+        tokens = self.storage.active_push_tokens(household_id)
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0]["appVersion"], "0.2.0")
+        self.assertEqual(tokens[0]["revision"], 2)
+        self.storage.disable_push_token(
+            household_id, tokens[0]["id"], datetime.now(UTC)
+        )
+        self.assertEqual(self.storage.active_push_tokens(household_id), [])
 
     def test_push_replay_is_idempotent_and_pull_uses_cursor(self):
         self.activate_empty_workspace()

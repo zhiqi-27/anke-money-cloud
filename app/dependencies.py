@@ -22,6 +22,7 @@ from app.services import (
     InvalidAgentTokenError,
     ClerkManagementClient,
 )
+from app.services.push_notifications import APNsPushNotificationService
 from app.models import AgentPrincipal
 from app.storage.cosmos import CosmosHouseholdStorage
 
@@ -65,6 +66,11 @@ def get_session_issuer() -> AnkeSessionTokenIssuer:
 @lru_cache(maxsize=1)
 def get_household_storage() -> CosmosHouseholdStorage:
     return CosmosHouseholdStorage(get_settings())
+
+
+@lru_cache(maxsize=1)
+def get_push_notification_service() -> APNsPushNotificationService:
+    return APNsPushNotificationService(get_household_storage(), get_settings())
 
 
 def cloud_service() -> CloudService:

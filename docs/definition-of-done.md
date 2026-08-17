@@ -114,3 +114,20 @@ not promote the Development deployment recorded earlier in this file.
 
 Local account-erasure tests do not prove Clerk session revocation, deployed
 Cosmos behavior, a signed iOS client, or Production deletion.
+
+## Change-driven synchronization checkpoint
+
+- [x] The authenticated device route validates a bootstrapped device and upserts one
+  APNs token document per device inside its household partition.
+- [x] Background push payloads contain only a generic change hint, use APNs priority
+  5 and background push type, and disable permanently rejected tokens.
+- [x] The Azure Functions Change Feed trigger filters synchronized entity types,
+  groups by household, and uses a pre-provisioned lease container.
+- [x] Credential-free tests cover token persistence, refresh, disable behavior,
+  APNs payload shape, endpoint environment, and OpenAPI exposure.
+- [ ] Development has the lease container, managed-identity Change Feed connection,
+  APNs Key Vault settings, deployed trigger discovery, and a physical-device silent
+  push round trip.
+
+Local completion does not prove APNs delivery, iOS background scheduling, deployed
+Change Feed behavior, or Production readiness.

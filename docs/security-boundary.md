@@ -67,6 +67,13 @@ Never commit or log:
 - Apple private keys
 - raw financial notes or complete financial documents
 
+APNs signing credentials are protected Function App settings or Key Vault
+references. Device tokens are delivery addresses, are never logged, and remain
+inside the owner household partition. Background notification payloads contain only
+`content-available` and a generic change hint; they exclude household IDs, entity
+IDs, amounts, notes, categories, and all other financial content. A notification
+never grants access: the app must still present its Anke session to pull changes.
+
 ## Logging and errors
 
 Allowed structured identifiers: request ID, operation ID, actor UID, household ID,
