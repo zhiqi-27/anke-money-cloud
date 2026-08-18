@@ -41,6 +41,7 @@ Clerk-backed Anke session contract; they do not validate the current implementat
 
 | 2026-08-17 | Local change-driven synchronization | Authenticated APNs token registration, household persistence, refresh/disable lifecycle, data-free background payload, sandbox routing, OpenAPI route, Change Feed trigger import/discovery, compile, and diff checks | Passed; 85 tests plus 23 subtests, 0 failures; Functions metadata exposes HTTP, retention timer, and Cosmos Change Feed triggers; no deployment, APNs request, Azure resource creation, or real user data access |
 | 2026-08-18 | Local Agent data-transfer expansion | Inclusive date filters and opaque pagination for ledger/assets; seven-tool MCP discovery; confirmed 1-25 entry ledger batches; per-entry idempotent replay, redacted audit, HTTP/MCP contracts, Cosmos continuation adapter, App pull visibility, Skill validation, compile, and diff checks | Passed; 93 credential-free tests, 0 failures; `anke-money-agent` passed `quick_validate.py`; no deployment, cloud write, App UI change, Simulator, or physical-device run |
+| 2026-08-18 | Development synchronization and Agent data-transfer deployment | Remote-build ZIP from code commit `964e280` deployed through Azure Cloud Shell to `anke-money-dev/func-anke-money-dev-zq01`; package SHA-256 `59f67c7f60fdc763873547fb2d683337289f7103949bee0bb696ccbe8ec763f5`; trigger discovery, public HTTP boundary, OpenAPI contract, Change Feed prerequisites, protected APNs configuration, and GitHub CI | Passed; deployment `8de38016-6ec1-426b-964d-83b8526df6b7` registered `http_app_func`, `enforce_data_retention`, and `notify_devices_of_cloud_changes`; `/ping` returned 200 with `environment=dev`; OpenAPI exposed paginated ledger/assets reads and `/agent/v1/ledger/entries/batch`; unauthenticated batch and `/mcp` calls returned 401; the `anke_sync_leases` container exists; all Change Feed settings are non-empty; APNs team, key, and private-key settings are Key Vault references; backend CI passed; no API Key, financial data, synthetic cloud write, APNs request, Simulator, or physical-device run was used |
 
 ## Remaining evidence boundaries
 
@@ -58,3 +59,7 @@ Clerk-backed Anke session contract; they do not validate the current implementat
 - Phase 5 account erasure is deployed and has exact synthetic-account evidence in
   Development. It does not prove Clerk session revocation, signed-iOS orchestration,
   physical-device deletion, or Production behavior.
+- The 2026-08-18 deployment proves route and trigger registration plus required
+  Development configuration. It does not prove authenticated remote pagination or
+  batch creation, Change Feed delivery, APNs acceptance, or physical-device
+  background execution.
