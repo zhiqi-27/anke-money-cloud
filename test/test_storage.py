@@ -1,7 +1,7 @@
 from datetime import UTC, date, datetime, timedelta
 import hashlib
 import unittest
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosResourceNotFoundError
 
@@ -114,7 +114,15 @@ class FakeCosmosContainer:
     def delete_item(self, *, item, partition_key):
         del self.items[(partition_key, item)]
 
-    def query_items(self, *, query, parameters, partition_key=None, **_):
+    def query_items(
+        self,
+        *,
+        query,
+        parameters,
+        partition_key=None,
+        max_item_count=None,
+        **_,
+    ):
         values = {item["name"]: item["value"] for item in parameters}
         documents = [
             item for (partition, _), item in self.items.items()
@@ -130,6 +138,25 @@ class FakeCosmosContainer:
             ]
         if values.get("@includeStaged") is False:
             documents = [item for item in documents if item.get("staged") is not True]
+        always_include = set(values.get("@alwaysIncludeTypes", []))
+        if "occurredAt" in query or "observedAt" in query:
+            temporal_field = "occurredAt" if "occurredAt" in query else "observedAt"
+            filtered = []
+            for item in documents:
+                if item.get("entityType") in always_include:
+                    filtered.append(item)
+                    continue
+                payload = item.get("payload") or item
+                temporal_value = payload.get(temporal_field)
+                if not isinstance(temporal_value, str):
+                    continue
+                date_text = temporal_value[:10]
+                if date_text < values.get("@startDate", date_text):
+                    continue
+                if date_text > values.get("@endDate", date_text):
+                    continue
+                filtered.append(item)
+            documents = filtered
         if "c.deletedAt < @cutoff" in query:
             documents = [
                 item for item in documents
@@ -147,11 +174,57 @@ class FakeCosmosContainer:
             return [len(documents)]
         if "ORDER BY c.changeSequence" in query:
             documents.sort(key=lambda item: item["changeSequence"])
+        elif "ORDER BY c.updatedAt DESC" in query:
+            documents.sort(
+                key=lambda item: (item.get("updatedAt", ""), item["id"]),
+                reverse=True,
+            )
         if "@limit" in values:
             documents = documents[:values["@limit"]]
         if "@take" in values:
             documents = documents[:values["@take"]]
+        if max_item_count is not None:
+            return FakePagedResults(documents, max_item_count)
         return documents
+
+
+class FakePagedResults:
+    def __init__(self, documents, page_size):
+        self.documents = documents
+        self.page_size = page_size
+
+    def by_page(self, continuation_token=None):
+        return FakePageIterator(
+            self.documents,
+            self.page_size,
+            continuation_token,
+        )
+
+
+class FakePageIterator:
+    def __init__(self, documents, page_size, continuation_token):
+        try:
+            self.offset = int(continuation_token or "0")
+        except ValueError as exc:
+            raise ValueError("Invalid synthetic continuation token") from exc
+        self.documents = documents
+        self.page_size = page_size
+        self.continuation_token = continuation_token
+        self._used = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._used or self.offset >= len(self.documents):
+            raise StopIteration
+        self._used = True
+        page = self.documents[self.offset:self.offset + self.page_size]
+        next_offset = self.offset + len(page)
+        self.continuation_token = (
+            str(next_offset) if next_offset < len(self.documents) else None
+        )
+        return iter(page)
 
 
 class PreconditionRetryCosmosContainer(FakeCosmosContainer):
@@ -310,6 +383,64 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         ]
         self.assertTrue(all(item["householdId"] == partition_key for item in documents))
 
+    def test_agent_ledger_pages_use_date_filter_and_continuation_token(self):
+        container = FakeCosmosContainer()
+        storage = CosmosHouseholdStorage(settings(), container=container)
+        household_id = str(uuid4())
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        container.create_item(body={
+            "id": household_id,
+            "householdId": household_id,
+            "entityType": "household",
+            "status": "active",
+            "lastChangeSequence": 0,
+            "createdAt": now,
+            "updatedAt": now,
+        })
+        actor = Actor(type=ActorType.agent, id=str(uuid4()))
+        requests = [
+            make_request().model_copy(update={
+                "household_id": UUID(household_id),
+                "id": uuid4(),
+                "idempotency_key": uuid4(),
+                "occurred_at": datetime(year, 8, day, tzinfo=UTC),
+                "month_start": date(year, 8, 1),
+            })
+            for year, day in ((2025, 1), (2026, 2), (2026, 3))
+        ]
+        for request in requests:
+            storage.create_ledger_entry(request, actor)
+
+        first, cursor, has_more = storage.list_agent_entities_page(
+            household_id,
+            {"ledgerEntry"},
+            1,
+            None,
+            date(2026, 1, 1),
+            date(2026, 12, 31),
+            "occurredAt",
+            set(),
+        )
+        second, final_cursor, final_has_more = storage.list_agent_entities_page(
+            household_id,
+            {"ledgerEntry"},
+            1,
+            cursor,
+            date(2026, 1, 1),
+            date(2026, 12, 31),
+            "occurredAt",
+            set(),
+        )
+
+        self.assertTrue(has_more)
+        self.assertIsNotNone(cursor)
+        self.assertFalse(final_has_more)
+        self.assertIsNone(final_cursor)
+        self.assertEqual(
+            {item["id"] for item in first + second},
+            {str(item.id) for item in requests[1:]},
+        )
+
     def test_verifies_exact_partition_path(self):
         CosmosHouseholdStorage(
             settings(), container=FakeCosmosContainer()
@@ -443,6 +574,72 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
             if stored_partition == partition
         }
         self.assertTrue({"memberProfile", "operation", "auditEvent", "device"}.issubset(stored_types))
+
+    def test_sync_replaces_legacy_persisted_sequence_gap_atomically(self):
+        entities = FakeCosmosContainer()
+        storage = CosmosHouseholdStorage(
+            settings(),
+            container=entities,
+            identities_container=FakeIdentityContainer(),
+        )
+        device_id = uuid4()
+        bootstrap = storage.bootstrap_owner(
+            "apple:subject-1",
+            DeviceRegistration(device_id=device_id, name="Synthetic iPhone", app_version="0.1.0"),
+        )
+        household_id = str(bootstrap.household_id)
+        mutation_id = uuid4()
+        operation_id = f"operation:{mutation_id}"
+        audit_id = f"audit:{mutation_id}"
+        entities.items[(household_id, operation_id)] = {
+            "id": operation_id,
+            "householdId": household_id,
+            "entityType": "operation",
+            "_etag": "operation-etag",
+            "result": {
+                "mutationId": str(mutation_id),
+                "entityId": "member-1",
+                "status": "rejected",
+                "reason": "outboxSequenceGap",
+            },
+        }
+        entities.items[(household_id, audit_id)] = {
+            "id": audit_id,
+            "householdId": household_id,
+            "entityType": "auditEvent",
+            "_etag": "audit-etag",
+            "outcome": "rejected",
+            "reason": "outboxSequenceGap",
+        }
+        mutation = SyncMutation(
+            mutation_id=mutation_id,
+            device_id=device_id,
+            sequence=1,
+            entity_type=SyncEntityType.member_profile,
+            entity_id="member-1",
+            action=MutationAction.create,
+            payload={"name": "Owner"},
+            occurred_at=datetime.now(UTC),
+        )
+
+        result = storage.push_mutation(
+            household_id,
+            Actor(type=ActorType.user, id="apple:subject-1"),
+            mutation,
+        )
+
+        self.assertEqual(result.status, MutationStatus.accepted)
+        cleanup_batch, cleanup_partition = entities.batch_calls[-2]
+        self.assertEqual(cleanup_partition, household_id)
+        self.assertEqual([item[0] for item in cleanup_batch], ["delete", "delete"])
+        self.assertEqual(
+            entities.items[(household_id, operation_id)]["result"]["status"],
+            "accepted",
+        )
+        self.assertEqual(
+            entities.items[(household_id, audit_id)]["outcome"],
+            "accepted",
+        )
 
     def test_cosmos_pull_cursor_is_a_persistent_monotonic_checkpoint(self):
         entities = FakeCosmosContainer()

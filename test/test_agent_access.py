@@ -8,6 +8,7 @@ from app.models import (
     Actor,
     ActorType,
     AgentAssetUpdate,
+    AgentLedgerBatchCreate,
     AgentLedgerEntryCreate,
     AgentScope,
     DeviceRegistration,
@@ -115,6 +116,66 @@ class AgentAccessTest(unittest.TestCase):
                 principal, request.model_copy(update={"amount_in_fen": 9_900})
             )
 
+    def test_confirmed_batch_replays_and_date_pages_without_duplicates(self):
+        created = self.cloud.create_agent_api_key(self.identity, self.access)
+        principal = self.access.authenticate(created.api_key)
+        requests = [
+            AgentLedgerEntryCreate(
+                id=uuid4(),
+                idempotency_key=uuid4(),
+                kind="transaction",
+                direction="expense",
+                occurred_at=datetime(year, 8, day, tzinfo=UTC),
+                month_start=date(year, 8, 1),
+                channel_id="cash",
+                category_id="grocery",
+                amount_in_fen=day * 100,
+            )
+            for year, day in ((2025, 1), (2026, 2), (2026, 3), (2026, 4))
+        ]
+        batch = AgentLedgerBatchCreate(entries=requests)
+
+        first = self.cloud.agent_create_ledger_batch(principal, batch)
+        replay = self.cloud.agent_create_ledger_batch(principal, batch)
+        first_page = self.cloud.agent_list_ledger_entries(
+            principal,
+            2,
+            None,
+            date(2026, 1, 1),
+            date(2026, 12, 31),
+        )
+        second_page = self.cloud.agent_list_ledger_entries(
+            principal,
+            2,
+            first_page.next_cursor,
+            date(2026, 1, 1),
+            date(2026, 12, 31),
+        )
+
+        self.assertEqual(first.created_count, 4)
+        self.assertEqual(first.replayed_count, 0)
+        self.assertEqual(replay.created_count, 0)
+        self.assertEqual(replay.replayed_count, 4)
+        self.assertTrue(first_page.has_more)
+        self.assertFalse(second_page.has_more)
+        returned_ids = {
+            item.entity_id for item in first_page.items + second_page.items
+        }
+        self.assertEqual(returned_ids, {str(item.id) for item in requests[1:]})
+        pulled = self.cloud.pull(self.identity, None, 20)
+        self.assertEqual(
+            {change.entity_id for change in pulled.changes},
+            {str(item.id) for item in requests},
+        )
+        with self.assertRaisesRegex(ValueError, "startDate"):
+            self.cloud.agent_list_ledger_entries(
+                principal,
+                20,
+                None,
+                date(2026, 12, 31),
+                date(2026, 1, 1),
+            )
+
     def test_reset_invalidates_the_previous_key_without_changing_identity(self):
         first = self.cloud.create_agent_api_key(self.identity, self.access)
         second = self.cloud.create_agent_api_key(self.identity, self.access)
@@ -209,6 +270,15 @@ class AgentAccessTest(unittest.TestCase):
         account_id = uuid4()
         for entity_type, entity_id, payload in (
             ("assetAccount", str(account_id), {"name": "Home", "amountInFen": 1_000}),
+            (
+                "assetSnapshot",
+                str(uuid4()),
+                {
+                    "accountId": str(account_id),
+                    "amountInFen": 900,
+                    "observedAt": "2025-08-05T00:00:00Z",
+                },
+            ),
             ("paymentChannel", "cash", {"name": "Cash", "sortOrder": 0}),
             ("category", "grocery", {"name": "Grocery", "sortOrder": 0}),
         ):
@@ -228,6 +298,21 @@ class AgentAccessTest(unittest.TestCase):
         self.assertFalse(first.replayed)
         self.assertTrue(replay.replayed)
         self.assertTrue(self.cloud.agent_list_assets(principal, 20).items)
+        current_assets = self.cloud.agent_list_assets(
+            principal,
+            20,
+            None,
+            date(now.year, 1, 1),
+            date(now.year, 12, 31),
+        )
+        self.assertEqual(
+            {item.entity_type for item in current_assets.items},
+            {"assetAccount", "assetSnapshot"},
+        )
+        self.assertNotIn(
+            "2025-08-05T00:00:00Z",
+            {item.payload.get("observedAt") for item in current_assets.items},
+        )
         self.cloud.agent_list_ledger_entries(principal, 20)
         self.assertTrue(self.cloud.agent_list_categories(principal, 20).items)
         self.assertTrue(self.cloud.agent_list_channels(principal, 20).items)

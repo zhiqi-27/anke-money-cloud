@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from collections import Counter
 import hashlib
 import json
@@ -14,6 +14,7 @@ from app.auth import AuthenticatedIdentity
 from azure.cosmos import CosmosClient
 from azure.cosmos.exceptions import (
     CosmosBatchOperationError,
+    CosmosHttpResponseError,
     CosmosResourceExistsError,
     CosmosResourceNotFoundError,
 )
@@ -638,6 +639,80 @@ class CosmosHouseholdStorage:
             partition_key=household_id,
         ))
 
+    def list_agent_entities_page(
+        self,
+        household_id: str,
+        entity_types: set[str],
+        limit: int,
+        cursor: str | None,
+        start_date: date | None,
+        end_date: date | None,
+        temporal_field: str,
+        always_include_entity_types: set[str],
+    ) -> tuple[list[dict], str | None, bool]:
+        if temporal_field not in {"occurredAt", "observedAt"}:
+            raise ValueError("Unsupported Agent temporal field")
+        household = self.read_household_document(household_id, household_id) or {}
+        include_staged = household.get("status") == "active"
+        parameters = [
+            {"name": "@householdId", "value": household_id},
+            {"name": "@types", "value": sorted(entity_types)},
+            {"name": "@includeStaged", "value": include_staged},
+        ]
+        top_level = f"SUBSTRING(c.{temporal_field}, 0, 10)"
+        nested = f"SUBSTRING(c.payload.{temporal_field}, 0, 10)"
+        temporal_conditions = [
+            f"(IS_DEFINED(c.{temporal_field}) "
+            f"OR IS_DEFINED(c.payload.{temporal_field}))"
+        ]
+        if start_date is not None:
+            parameters.append({"name": "@startDate", "value": start_date.isoformat()})
+            temporal_conditions.append(
+                f"((IS_DEFINED(c.{temporal_field}) AND {top_level} >= @startDate) "
+                f"OR (IS_DEFINED(c.payload.{temporal_field}) AND {nested} >= @startDate))"
+            )
+        if end_date is not None:
+            parameters.append({"name": "@endDate", "value": end_date.isoformat()})
+            temporal_conditions.append(
+                f"((IS_DEFINED(c.{temporal_field}) AND {top_level} <= @endDate) "
+                f"OR (IS_DEFINED(c.payload.{temporal_field}) AND {nested} <= @endDate))"
+            )
+        temporal_query = " AND ".join(temporal_conditions)
+        if always_include_entity_types:
+            parameters.append(
+                {
+                    "name": "@alwaysIncludeTypes",
+                    "value": sorted(always_include_entity_types),
+                }
+            )
+            temporal_query = (
+                "(ARRAY_CONTAINS(@alwaysIncludeTypes, c.entityType) OR "
+                f"({temporal_query}))"
+            )
+        iterator = self._entities_container().query_items(
+            query=(
+                "SELECT * FROM c WHERE c.householdId = @householdId "
+                "AND ARRAY_CONTAINS(@types, c.entityType) "
+                "AND (NOT IS_DEFINED(c.deletedAt) OR IS_NULL(c.deletedAt)) "
+                "AND (@includeStaged = true OR NOT IS_DEFINED(c.staged) OR c.staged = false) "
+                f"AND {temporal_query} ORDER BY c.updatedAt DESC"
+            ),
+            parameters=parameters,
+            partition_key=household_id,
+            max_item_count=limit,
+        )
+        try:
+            pager = iterator.by_page(continuation_token=cursor)
+            page = list(next(pager))
+        except StopIteration:
+            return [], cursor, False
+        except CosmosHttpResponseError as exc:
+            if cursor is not None and getattr(exc, "status_code", None) == 400:
+                raise ValueError("Invalid Agent page cursor") from exc
+            raise
+        next_cursor = pager.continuation_token
+        return page, next_cursor, next_cursor is not None
+
     def create_agent_entity(
         self,
         household_id: str,
@@ -816,7 +891,14 @@ class CosmosHouseholdStorage:
         mutation_id = str(mutation.mutation_id)
         operation = self._read_operation(household_id, mutation_id)
         if operation is not None and "result" in operation:
-            return MutationResult.model_validate(operation["result"])
+            existing_result = MutationResult.model_validate(operation["result"])
+            if existing_result.reason != "outboxSequenceGap":
+                return existing_result
+            self._delete_legacy_sequence_gap_records(
+                household_id,
+                mutation_id,
+                operation,
+            )
         device_id = str(mutation.device_id)
         device = self.read_household_document(household_id, device_id)
         if device is None or device.get("entityType") != "device":
@@ -831,14 +913,12 @@ class CosmosHouseholdStorage:
             )
         last_sequence = int(device.get("lastOutboxSequence", 0))
         if mutation.sequence != last_sequence + 1:
-            result = MutationResult(
+            return MutationResult(
                 mutation_id=mutation.mutation_id,
                 entity_id=mutation.entity_id,
                 status=MutationStatus.rejected,
                 reason="outboxSequenceGap",
-            )
-            return self._record_rejected_without_device(
-                household_id, actor, mutation, result
+                expected_sequence=last_sequence + 1,
             )
 
         entity_id = str(mutation.entity_id)
@@ -1317,6 +1397,25 @@ class CosmosHouseholdStorage:
                 return MutationResult.model_validate(existing["result"])
             raise
         return result
+
+    def _delete_legacy_sequence_gap_records(
+        self,
+        household_id: str,
+        mutation_id: str,
+        operation: dict,
+    ) -> None:
+        operations = [
+            ("delete", (operation["id"],), self._etag_kwargs(operation)),
+        ]
+        audit = self.read_household_document(household_id, f"audit:{mutation_id}")
+        if audit is not None:
+            operations.append(
+                ("delete", (audit["id"],), self._etag_kwargs(audit))
+            )
+        self._entities_container().execute_item_batch(
+            batch_operations=operations,
+            partition_key=household_id,
+        )
 
     def _mutation_batch(self, household_id, actor, mutation, result, device):
         now = self._now()

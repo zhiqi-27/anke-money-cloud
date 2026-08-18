@@ -10,7 +10,7 @@ Apple credential, Anke session token, Cosmos credential, or household ID.
 2. Create the workspace's API Key.
 3. Copy the API Key when it is shown.
 
-The API Key grants the six fixed Anke Skill capabilities and remains valid until
+The API Key grants six fixed scopes through seven Anke Skill tools and remains valid until
 the owner resets or revokes it. The service stores only a hash and a display
 prefix; plaintext is returned only after creation or reset.
 
@@ -34,7 +34,9 @@ credential, do not connect it.
 
 Invoke `$anke-money-agent` or make a matching money request. Reads use the
 granted scopes. The Skill must show the exact proposed ledger or asset change and
-obtain explicit confirmation immediately before a write.
+obtain explicit confirmation immediately before a write. A bill document remains
+in the Agent host: after one confirmed summary, the Skill may send only normalized
+entries in unchanged chunks of at most 25 through `ledger_create_batch`.
 
 The owner can reset or revoke the API Key in Anke Money at any time. Either
 change is checked on the next MCP request. Resetting immediately invalidates the

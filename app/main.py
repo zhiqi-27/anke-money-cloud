@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import date
 import logging
 import time
 import uuid
@@ -26,6 +27,8 @@ from app.models import (
     AgentAPIKeyCreated,
     AgentAPIKeyView,
     AgentAssetUpdate,
+    AgentLedgerBatchCreate,
+    AgentLedgerBatchCreateResponse,
     AgentLedgerCreateResponse,
     AgentLedgerEntryCreate,
     AgentEntityCreateResponse,
@@ -355,6 +358,25 @@ async def agent_create_ledger_entry(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@fastapi_app.post(
+    "/agent/v1/ledger/entries/batch",
+    tags=["agent"],
+    response_model=AgentLedgerBatchCreateResponse,
+    summary="Append up to 25 independently idempotent ledger entries",
+)
+async def agent_create_ledger_batch(
+    request: AgentLedgerBatchCreate,
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentLedgerBatchCreateResponse:
+    try:
+        return service.agent_create_ledger_batch(principal, request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @fastapi_app.get(
     "/agent/v1/ledger/entries",
     tags=["agent"],
@@ -363,13 +385,24 @@ async def agent_create_ledger_entry(
 )
 async def agent_list_ledger_entries(
     limit: int = Query(default=200, ge=1, le=500),
+    cursor: str | None = Query(default=None, max_length=16384),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
     principal: AgentPrincipal = Depends(current_agent),
     service: CloudService = Depends(cloud_service),
 ) -> AgentEntityListResponse:
     try:
-        return service.agent_list_ledger_entries(principal, limit)
+        return service.agent_list_ledger_entries(
+            principal,
+            limit,
+            cursor,
+            start_date,
+            end_date,
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @fastapi_app.get(
@@ -380,13 +413,24 @@ async def agent_list_ledger_entries(
 )
 async def agent_list_assets(
     limit: int = Query(default=200, ge=1, le=500),
+    cursor: str | None = Query(default=None, max_length=16384),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
     principal: AgentPrincipal = Depends(current_agent),
     service: CloudService = Depends(cloud_service),
 ) -> AgentEntityListResponse:
     try:
-        return service.agent_list_assets(principal, limit)
+        return service.agent_list_assets(
+            principal,
+            limit,
+            cursor,
+            start_date,
+            end_date,
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @fastapi_app.patch(

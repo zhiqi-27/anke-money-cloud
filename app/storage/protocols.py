@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from app.models import (
@@ -103,6 +103,18 @@ class HouseholdStorage(Protocol):
         entity_types: set[str],
         limit: int,
     ) -> list[dict]: ...
+
+    def list_agent_entities_page(
+        self,
+        household_id: str,
+        entity_types: set[str],
+        limit: int,
+        cursor: str | None,
+        start_date: date | None,
+        end_date: date | None,
+        temporal_field: str,
+        always_include_entity_types: set[str],
+    ) -> tuple[list[dict], str | None, bool]: ...
 
     def create_agent_entity(
         self,

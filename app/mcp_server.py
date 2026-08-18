@@ -15,6 +15,7 @@ from pydantic import Field
 
 from app.models import (
     AgentAssetUpdate,
+    AgentLedgerBatchCreate,
     AgentLedgerEntryCreate,
     AgentPrincipal,
     OperationSource,
@@ -67,19 +68,23 @@ def _principal() -> AgentPrincipal:
 
 
 def _service() -> CloudService:
-    from app.dependencies import get_household_storage
+    from app.dependencies import get_household_storage, get_push_notification_service
 
-    return CloudService(get_household_storage())
+    return CloudService(
+        get_household_storage(),
+        change_notifier=get_push_notification_service().notify_household,
+    )
 
 
 mcp_server = MCPServer(
     name="Anke Money",
-    description="Six explicitly scoped tools for one authorized Anke Money household.",
+    description="Seven non-destructive tools for one authorized Anke Money household.",
     instructions=(
         "Use only the granted capability. Never infer another household, modify "
-        "authorization, delete permanently, import statements, or perform bulk "
-        "asset changes. Obtain explicit user confirmation immediately before a "
-        "ledger:create or assets:update call and reuse the same idempotency key "
+        "authorization, delete permanently, send raw statements to Anke Money, or "
+        "perform bulk asset changes. Obtain explicit user confirmation immediately "
+        "before a ledger:create or assets:update call. A ledger batch requires one "
+        "complete batch summary and confirmation. Reuse each idempotency key only "
         "when retrying that exact write."
     ),
     token_verifier=AgentMCPTokenVerifier(),
@@ -98,10 +103,15 @@ mcp_server = MCPServer(
 )
 async def ledger_read(
     limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    cursor: Annotated[str | None, Field(max_length=16384)] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     ctx: Context | None = None,
 ) -> dict:
     del ctx
-    response = _service().agent_list_ledger_entries(_principal(), limit)
+    response = _service().agent_list_ledger_entries(
+        _principal(), limit, cursor, start_date, end_date
+    )
     return response.model_dump(by_alias=True, mode="json")
 
 
@@ -149,16 +159,49 @@ async def ledger_create(
 
 
 @mcp_server.tool(
+    name="ledger_create_batch",
+    description=(
+        "Append 1 through 25 ledger entries after showing the complete proposed "
+        "batch and receiving one explicit user confirmation. Each entry needs its "
+        "own stable UUID idempotency key; retry the unchanged batch safely."
+    ),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def ledger_create_batch(
+    entries: Annotated[
+        list[AgentLedgerEntryCreate],
+        Field(min_length=1, max_length=25),
+    ],
+    ctx: Context | None = None,
+) -> dict:
+    del ctx
+    response = _service().agent_create_ledger_batch(
+        _principal(), AgentLedgerBatchCreate(entries=entries)
+    )
+    return response.model_dump(by_alias=True, mode="json")
+
+
+@mcp_server.tool(
     name="assets_read",
     description="Read asset accounts and dated snapshots for this connection's household.",
     annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
 )
 async def assets_read(
     limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    cursor: Annotated[str | None, Field(max_length=16384)] = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     ctx: Context | None = None,
 ) -> dict:
     del ctx
-    response = _service().agent_list_assets(_principal(), limit)
+    response = _service().agent_list_assets(
+        _principal(), limit, cursor, start_date, end_date
+    )
     return response.model_dump(by_alias=True, mode="json")
 
 

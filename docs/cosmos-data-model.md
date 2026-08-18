@@ -180,12 +180,23 @@ If any item conflicts or fails, the whole batch fails. A retry first point-reads
 operation document and returns its stored result. Cross-container atomicity is not
 assumed.
 
+The Agent batch endpoint is an orchestration over at most 25 of these independent
+per-entry transactions. It stores no batch or import-session document. Each entry
+has its own idempotency claim and audit event, so retrying a partially completed
+request replays accepted entries instead of duplicating them and then continues
+the remaining entries.
+
 ## Query and indexing baseline
 
 Request paths prefer point reads. Household list queries always constrain
 `householdId` and `entityType`, then optionally `monthStart`, `direction`, or
 `updatedAt`. Index policy tuning follows measured query metrics; A0 does not create
 speculative composite indexes.
+
+Agent ledger and asset reporting reads additionally constrain the requested
+inclusive date interval and use the Cosmos continuation token as an opaque cursor.
+Asset-account metadata is included independently from the snapshot date filter so
+returned snapshots can always be resolved to their accounts.
 
 ## Evolution and migration
 

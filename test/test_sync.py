@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import base64
 import hashlib
 import json
 import unittest
@@ -206,6 +207,54 @@ class CloudSyncTest(unittest.TestCase):
         gap = mutation(self.device_id, sequence=2)
         result = self.service.push(self.identity, SyncPushRequest(device_id=self.device_id, mutations=[gap]))
         self.assertEqual(result.results[0].reason, "outboxSequenceGap")
+        self.assertEqual(result.results[0].expected_sequence, 1)
+
+        recovered = mutation(
+            self.device_id,
+            sequence=1,
+            mutation_id=gap.mutation_id,
+        )
+        recovered_result = self.service.push(
+            self.identity,
+            SyncPushRequest(device_id=self.device_id, mutations=[recovered]),
+        )
+        self.assertEqual(recovered_result.results[0].status, MutationStatus.accepted)
+
+    def test_legacy_persisted_sequence_gap_is_replaced_by_final_result(self):
+        self.activate_empty_workspace()
+        item = mutation(self.device_id, sequence=1)
+        household_id = str(self.bootstrap.household_id)
+        mutation_id = str(item.mutation_id)
+        self.storage._items[(household_id, f"operation:{mutation_id}")] = {
+            "id": f"operation:{mutation_id}",
+            "entityType": "operation",
+            "householdId": household_id,
+            "result": {
+                "mutationId": mutation_id,
+                "entityId": item.entity_id,
+                "status": "rejected",
+                "reason": "outboxSequenceGap",
+            },
+        }
+        self.storage._items[(household_id, f"audit:{mutation_id}")] = {
+            "id": f"audit:{mutation_id}",
+            "entityType": "auditEvent",
+            "householdId": household_id,
+            "outcome": "rejected",
+            "reason": "outboxSequenceGap",
+        }
+
+        result = self.service.push(
+            self.identity,
+            SyncPushRequest(device_id=self.device_id, mutations=[item]),
+        )
+
+        self.assertEqual(result.results[0].status, MutationStatus.accepted)
+        operation = self.storage._items[(household_id, f"operation:{mutation_id}")]
+        audit = self.storage._items[(household_id, f"audit:{mutation_id}")]
+        self.assertEqual(operation["result"]["status"], "accepted")
+        self.assertEqual(audit["outcome"], "accepted")
+        self.assertIsNone(audit["reason"])
 
         foreign = uuid4()
         result = self.service.push(self.identity, SyncPushRequest(device_id=foreign, mutations=[mutation(foreign)]))
@@ -276,22 +325,48 @@ class CloudSyncTest(unittest.TestCase):
         ):
             self.service.stage_migration(self.identity, request)
 
-    def test_money_rejects_float_and_ledger_mutations_are_forbidden(self):
+    def test_money_rejects_float_and_ledger_mutations_round_trip(self):
         with self.assertRaises(ValidationError):
             mutation(self.device_id, payload=ledger_payload(12.5))
-        with self.assertRaises(ValidationError):
-            mutation(
-                self.device_id,
-                action=MutationAction.update,
-                base_revision=1,
-            )
-        with self.assertRaises(ValidationError):
-            mutation(
-                self.device_id,
-                action=MutationAction.delete,
-                base_revision=1,
-                payload=None,
-            )
+
+        self.activate_empty_workspace()
+        entity_id = str(uuid4())
+        created = mutation(self.device_id, entity_id=entity_id)
+        self.service.push(
+            self.identity,
+            SyncPushRequest(device_id=self.device_id, mutations=[created]),
+        )
+        updated = mutation(
+            self.device_id,
+            sequence=2,
+            entity_id=entity_id,
+            action=MutationAction.update,
+            base_revision=1,
+            payload=ledger_payload(9_900),
+        )
+        update_result = self.service.push(
+            self.identity,
+            SyncPushRequest(device_id=self.device_id, mutations=[updated]),
+        )
+        deleted = mutation(
+            self.device_id,
+            sequence=3,
+            entity_id=entity_id,
+            action=MutationAction.delete,
+            base_revision=2,
+            payload=None,
+        )
+        delete_result = self.service.push(
+            self.identity,
+            SyncPushRequest(device_id=self.device_id, mutations=[deleted]),
+        )
+
+        self.assertEqual(update_result.results[0].revision, 2)
+        self.assertEqual(
+            update_result.results[0].server_entity["payload"]["amountInFen"],
+            9_900,
+        )
+        self.assertIsNotNone(delete_result.results[0].server_entity["deletedAt"])
 
     def test_allocation_metadata_round_trips(self):
         self.activate_empty_workspace()
@@ -396,11 +471,43 @@ class CloudSyncTest(unittest.TestCase):
             payload={**payload, "name": "房贷", "assetGroup": "liability"},
         )
         self.assertEqual(liability.payload["assetGroup"], "liability")
+        interest = mutation(
+            self.device_id,
+            entity_type=SyncEntityType.category,
+            entity_id="photography",
+            payload={**payload, "name": "摄影", "assetGroup": "interest"},
+        )
+        self.assertEqual(interest.payload["assetGroup"], "interest")
         with self.assertRaises(ValidationError):
             mutation(
                 self.device_id,
                 entity_type=SyncEntityType.category,
                 payload={**payload, "assetGroup": "other"},
+            )
+
+    def test_interest_asset_image_is_bounded_and_content_typed(self):
+        png = b"\x89PNG\r\n"
+        item = mutation(
+            self.device_id,
+            entity_type=SyncEntityType.asset_account,
+            payload={
+                "name": "Leica M11",
+                "amountInFen": 5_880_000,
+                "imageDataBase64": base64.b64encode(png).decode(),
+                "imageContentType": "image/png",
+            },
+        )
+        self.assertEqual(item.payload["imageContentType"], "image/png")
+        with self.assertRaises(ValidationError):
+            mutation(
+                self.device_id,
+                entity_type=SyncEntityType.asset_account,
+                payload={
+                    "name": "Too large",
+                    "amountInFen": 1,
+                    "imageDataBase64": base64.b64encode(b"\x89PNG" + b"x" * 400_000).decode(),
+                    "imageContentType": "image/png",
+                },
             )
 
     def test_migration_tombstone_digest_matches_ios_vector(self):

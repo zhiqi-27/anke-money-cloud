@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from datetime import timedelta
 import hashlib
 import json
@@ -479,6 +479,54 @@ class InMemoryHouseholdStorage:
             reverse=True,
         )[:limit]
 
+    def list_agent_entities_page(
+        self,
+        household_id: str,
+        entity_types: set[str],
+        limit: int,
+        cursor: str | None,
+        start_date: date | None,
+        end_date: date | None,
+        temporal_field: str,
+        always_include_entity_types: set[str],
+    ) -> tuple[list[dict], str | None, bool]:
+        try:
+            offset = int(cursor or "0")
+        except ValueError as exc:
+            raise ValueError("Invalid Agent page cursor") from exc
+        if offset < 0:
+            raise ValueError("Invalid Agent page cursor")
+        start_text = start_date.isoformat() if start_date is not None else None
+        end_text = end_date.isoformat() if end_date is not None else None
+        documents = []
+        for (partition, _), item in self._items.items():
+            if (
+                partition != household_id
+                or item.get("entityType") not in entity_types
+                or item.get("deletedAt") is not None
+                or item.get("staged") is True
+            ):
+                continue
+            if item.get("entityType") not in always_include_entity_types:
+                payload = item.get("payload") or item
+                temporal_value = payload.get(temporal_field)
+                if not isinstance(temporal_value, str):
+                    continue
+                date_text = temporal_value[:10]
+                if start_text is not None and date_text < start_text:
+                    continue
+                if end_text is not None and date_text > end_text:
+                    continue
+            documents.append(dict(item))
+        documents.sort(
+            key=lambda item: (item.get("updatedAt", ""), item["id"]),
+            reverse=True,
+        )
+        page = documents[offset:offset + limit]
+        next_offset = offset + len(page)
+        has_more = next_offset < len(documents)
+        return page, str(next_offset) if has_more else None, has_more
+
     def create_agent_entity(
         self,
         household_id: str,
@@ -640,7 +688,11 @@ class InMemoryHouseholdStorage:
             operation_key = (household_id, f"operation:{mutation_id}")
             existing_operation = self._items.get(operation_key)
             if existing_operation is not None:
-                return MutationResult.model_validate(existing_operation["result"])
+                existing_result = MutationResult.model_validate(existing_operation["result"])
+                if existing_result.reason != "outboxSequenceGap":
+                    return existing_result
+                self._items.pop(operation_key, None)
+                self._items.pop((household_id, f"audit:{mutation_id}"), None)
 
             device_id = str(mutation.device_id)
             device = self._items.get((household_id, device_id))
@@ -649,7 +701,13 @@ class InMemoryHouseholdStorage:
             sequence_key = (household_id, device_id)
             last_sequence = self._device_sequences.get(sequence_key, 0)
             if mutation.sequence != last_sequence + 1:
-                return self._rejected_mutation(household_id, actor, mutation, "outboxSequenceGap")
+                return MutationResult(
+                    mutation_id=mutation.mutation_id,
+                    entity_id=mutation.entity_id,
+                    status=MutationStatus.rejected,
+                    reason="outboxSequenceGap",
+                    expected_sequence=last_sequence + 1,
+                )
 
             current = self._items.get((household_id, entity_id))
             if mutation.action is MutationAction.create:

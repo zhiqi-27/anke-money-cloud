@@ -74,14 +74,30 @@ not promote the Development deployment recorded earlier in this file.
 
 ## A2 local implementation checkpoint
 
-- [x] HTTP API exposes exactly the six frozen scopes and no destructive, authorization-management, cross-household, import, or bulk-write route.
+- [x] HTTP API exposes exactly the six frozen scopes and no destructive, authorization-management, cross-household, raw-import, or unconfirmed bulk-write route.
 - [x] Every Agent write binds its verified connection, scope, idempotency key, source, request hash, redacted before/after difference, and audit event in one household transaction.
 - [x] Source is server-derived metadata and spoofed write-body source is ignored; one API Key works through direct Agent HTTP and Remote MCP.
 - [x] Replaying the exact write returns its original result; reusing the key with changed content is rejected.
-- [x] Remote MCP uses Streamable HTTP and exposes exactly six tools backed by the same services as HTTP.
-- [x] A real MCP client session authenticates with the revocable API Key, lists six tools, writes, replays, and produces owner-visible MCP audit evidence.
+- [x] Remote MCP uses Streamable HTTP and is backed by the same services as HTTP.
+- [x] A real MCP client session authenticates with the revocable API Key, writes, replays, and produces attributable MCP audit evidence.
 - [x] The repository-packaged Anke Money Skill requires immediate confirmation before either write and validates against the Skill package contract.
 - [x] Current A2 code is deployed to Development and passes remote HTTP, MCP, audit, revocation, and reconnect E2E.
+
+## Agent data-transfer expansion checkpoint
+
+- [x] Ledger and asset reads support inclusive date filters, opaque pagination,
+      stable empty/final-page behavior, and invalid-range rejection.
+- [x] HTTP and MCP expose one confirmed ledger batch operation with 1 through 25
+      entries under the existing `ledger:create` scope.
+- [x] Every batch entry retains independent append-only idempotency and redacted
+      audit behavior; retrying an exact batch creates no duplicates.
+- [x] No raw statement, import-session, batch rollback, ledger update/delete, bulk
+      asset update, cross-household selector, or new App management requirement is
+      introduced.
+- [x] Credential-free model, service, API, MCP, in-memory, and Cosmos adapter tests,
+      compile verification, Skill validation, and `git diff --check` pass.
+- [ ] Development deployment and remote HTTP/MCP interoperability are recorded
+      separately before this capability is described as deployed.
 
 ## A3/A4 local implementation checkpoint
 

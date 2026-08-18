@@ -32,6 +32,13 @@ audit-log operations remain outside the Agent surface. Asset update is limited t
 one appended snapshot. Direct Agent HTTP and Remote MCP verify the same revocable
 key on every request and never receive a client-selected household ID or source.
 
+`ledger:create` may append a confirmed batch of at most 25 entries. Every entry is
+validated and independently idempotent and uses the existing transactional
+entity/operation/audit write. The server does not accept the raw source statement,
+does not expose ledger update/delete, and does not add a bulk asset operation.
+Date-ranged ledger and asset reads remain inside the same household and return an
+opaque continuation cursor rather than an unrestricted cross-partition export.
+
 New keys use a compact, URL-safe format containing a compact household locator and
 a 192-bit random secret. Previously issued full-capability keys remain valid until
 reset or revocation; removed limited-access credentials remain invalid. Neither

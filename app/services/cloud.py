@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+import logging
+from typing import Callable
 from uuid import UUID
 
 from app.auth import AuthenticatedIdentity
@@ -8,6 +10,8 @@ from app.models import (
     AgentAPIKeyCreated,
     AgentAPIKeyView,
     AgentAssetUpdate,
+    AgentLedgerBatchCreate,
+    AgentLedgerBatchCreateResponse,
     AgentEntityCreateResponse,
     AgentEntityListResponse,
     AgentEntityView,
@@ -33,6 +37,9 @@ from app.storage.protocols import HouseholdStorage
 from app.services.agent_access import AgentAccessService
 
 
+logger = logging.getLogger(__name__)
+
+
 class MembershipRequiredError(RuntimeError):
     pass
 
@@ -46,8 +53,14 @@ class DeviceRegistrationRequiredError(RuntimeError):
 
 
 class CloudService:
-    def __init__(self, storage: HouseholdStorage):
+    def __init__(
+        self,
+        storage: HouseholdStorage,
+        *,
+        change_notifier: Callable[[str], object] | None = None,
+    ):
         self._storage = storage
+        self._change_notifier = change_notifier
 
     def bootstrap(
         self,
@@ -129,12 +142,48 @@ class CloudService:
             storage_request,
             Actor(type=ActorType.agent, id=str(principal.connection_id)),
         )
+        self._notify_changes(str(principal.household_id))
         return AgentLedgerCreateResponse(entry=result.entry, replayed=result.replayed)
+
+    def agent_create_ledger_batch(
+        self,
+        principal: AgentPrincipal,
+        request: AgentLedgerBatchCreate,
+    ) -> AgentLedgerBatchCreateResponse:
+        self._require_active_household(str(principal.household_id))
+        self._require_agent_scope(
+            principal, AgentScope.ledger_create, "ledger.create.batch"
+        )
+        actor = Actor(type=ActorType.agent, id=str(principal.connection_id))
+        results = []
+        for entry in request.entries:
+            storage_request = LedgerEntryCreate(
+                **entry.model_dump(),
+                household_id=principal.household_id,
+                source=principal.integration,
+            )
+            result = self._storage.create_ledger_entry(storage_request, actor)
+            results.append(
+                AgentLedgerCreateResponse(
+                    entry=result.entry,
+                    replayed=result.replayed,
+                )
+            )
+        self._notify_changes(str(principal.household_id))
+        replayed_count = sum(result.replayed for result in results)
+        return AgentLedgerBatchCreateResponse(
+            results=results,
+            created_count=len(results) - replayed_count,
+            replayed_count=replayed_count,
+        )
 
     def agent_list_ledger_entries(
         self,
         principal: AgentPrincipal,
         limit: int,
+        cursor: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> AgentEntityListResponse:
         return self._agent_list(
             principal,
@@ -142,12 +191,19 @@ class CloudService:
             {"ledgerEntry"},
             "ledger.read",
             limit,
+            cursor=cursor,
+            start_date=start_date,
+            end_date=end_date,
+            temporal_field="occurredAt",
         )
 
     def agent_list_assets(
         self,
         principal: AgentPrincipal,
         limit: int,
+        cursor: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> AgentEntityListResponse:
         return self._agent_list(
             principal,
@@ -155,6 +211,11 @@ class CloudService:
             {"assetAccount", "assetSnapshot"},
             "assets.read",
             limit,
+            cursor=cursor,
+            start_date=start_date,
+            end_date=end_date,
+            temporal_field="observedAt",
+            always_include_entity_types={"assetAccount"},
         )
 
     def agent_list_categories(
@@ -232,6 +293,7 @@ class CloudService:
             {"before": before, "after": after},
             datetime.now(UTC),
         )
+        self._notify_changes(str(principal.household_id))
         return AgentEntityCreateResponse(
             item=self._agent_entity_view(document),
             replayed=replayed,
@@ -289,6 +351,11 @@ class CloudService:
             result = self._storage.push_mutation(household_id, actor, mutation)
             results.append(result)
             blocked = result.status in {MutationStatus.conflict, MutationStatus.rejected}
+        if any(
+            result.status in {MutationStatus.accepted, MutationStatus.replayed}
+            for result in results
+        ):
+            self._notify_changes(household_id)
         return SyncPushResponse(results=results)
 
     def pull(
@@ -353,6 +420,18 @@ class CloudService:
             raise MembershipRequiredError("Bootstrap is required")
         return household_id
 
+    def _notify_changes(self, household_id: str) -> None:
+        """Best-effort fast path; Cosmos Change Feed remains the durable fallback."""
+        if self._change_notifier is None:
+            return
+        try:
+            self._change_notifier(household_id)
+        except Exception:
+            logger.exception(
+                "Immediate APNs notification failed, household_id=%s",
+                household_id,
+            )
+
     def _require_active_household(self, household_id: str) -> None:
         household = self._storage.read_household_document(household_id, household_id)
         if household is None or household.get("status") != "active":
@@ -367,14 +446,36 @@ class CloudService:
         entity_types: set[str],
         action: str,
         limit: int,
+        *,
+        cursor: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        temporal_field: str | None = None,
+        always_include_entity_types: set[str] | None = None,
     ) -> AgentEntityListResponse:
         self._require_active_household(str(principal.household_id))
         self._require_agent_scope(principal, required_scope, action)
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise ValueError("startDate must not be after endDate")
         household_id = str(principal.household_id)
         actor = Actor(type=ActorType.agent, id=str(principal.connection_id))
-        documents = self._storage.list_agent_entities(
-            household_id, entity_types, limit
-        )
+        if temporal_field is None and cursor is None:
+            documents = self._storage.list_agent_entities(
+                household_id, entity_types, limit
+            )
+            next_cursor = None
+            has_more = False
+        else:
+            documents, next_cursor, has_more = self._storage.list_agent_entities_page(
+                household_id,
+                entity_types,
+                limit,
+                cursor,
+                start_date,
+                end_date,
+                temporal_field,
+                always_include_entity_types or set(),
+            )
         self._storage.record_agent_read(
             household_id,
             actor,
@@ -384,7 +485,9 @@ class CloudService:
             datetime.now(UTC),
         )
         return AgentEntityListResponse(
-            items=[self._agent_entity_view(document) for document in documents]
+            items=[self._agent_entity_view(document) for document in documents],
+            next_cursor=next_cursor,
+            has_more=has_more,
         )
 
     def _require_agent_scope(

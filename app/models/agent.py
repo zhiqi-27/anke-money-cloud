@@ -85,6 +85,26 @@ class AgentLedgerCreateResponse(APIModel):
     replayed: bool
 
 
+class AgentLedgerBatchCreate(APIModel):
+    entries: list[AgentLedgerEntryCreate] = Field(min_length=1, max_length=25)
+
+    @model_validator(mode="after")
+    def entries_have_unique_ids(self) -> "AgentLedgerBatchCreate":
+        entity_ids = [entry.id for entry in self.entries]
+        if len(entity_ids) != len(set(entity_ids)):
+            raise ValueError("Batch ledger entry IDs must be unique")
+        idempotency_keys = [entry.idempotency_key for entry in self.entries]
+        if len(idempotency_keys) != len(set(idempotency_keys)):
+            raise ValueError("Batch ledger idempotency keys must be unique")
+        return self
+
+
+class AgentLedgerBatchCreateResponse(APIModel):
+    results: list[AgentLedgerCreateResponse]
+    created_count: int = Field(ge=0)
+    replayed_count: int = Field(ge=0)
+
+
 class AgentAssetUpdate(APIModel):
     snapshot_id: UUID
     idempotency_key: UUID
@@ -111,6 +131,8 @@ class AgentEntityView(APIModel):
 
 class AgentEntityListResponse(APIModel):
     items: list[AgentEntityView]
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class AgentEntityCreateResponse(APIModel):

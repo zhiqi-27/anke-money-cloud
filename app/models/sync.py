@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
@@ -67,6 +69,29 @@ def _require_timezone_timestamp(payload: dict[str, Any], key: str) -> None:
         raise ValueError(f"{key} must include a timezone")
 
 
+def _validate_optional_asset_image(payload: dict[str, Any]) -> None:
+    if "imageDataBase64" not in payload:
+        return
+    encoded = payload.get("imageDataBase64")
+    content_type = payload.get("imageContentType")
+    if encoded is None:
+        if content_type is not None:
+            raise ValueError("imageContentType must be null when imageDataBase64 is null")
+        return
+    if not isinstance(encoded, str) or content_type not in {"image/jpeg", "image/png"}:
+        raise ValueError("Asset image must use Base64 JPEG or PNG data")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("imageDataBase64 must be valid Base64") from error
+    if len(decoded) > 400_000:
+        raise ValueError("Asset image must not exceed 400000 decoded bytes")
+    if content_type == "image/png" and not decoded.startswith(b"\x89PNG"):
+        raise ValueError("Asset image content type does not match PNG data")
+    if content_type == "image/jpeg" and not decoded.startswith(b"\xff\xd8\xff"):
+        raise ValueError("Asset image content type does not match JPEG data")
+
+
 def _validate_entity_payload(
     entity_type: SyncEntityType,
     payload: dict[str, Any],
@@ -128,6 +153,7 @@ def _validate_entity_payload(
     elif entity_type is SyncEntityType.asset_account:
         _require_string(payload, "name")
         _require_integer(payload, "amountInFen")
+        _validate_optional_asset_image(payload)
     elif entity_type is SyncEntityType.asset_snapshot:
         try:
             UUID(_require_string(payload, "accountId"))
@@ -151,7 +177,7 @@ def _validate_entity_payload(
         _require_boolean(payload, "isSystem")
         scope = payload.get("scope", "ledger")
         if scope == "asset":
-            if payload.get("assetGroup") not in {"financial", "living", "receivable", "liability"}:
+            if payload.get("assetGroup") not in {"financial", "living", "interest", "receivable", "liability"}:
                 raise ValueError("Asset category group is invalid")
         elif scope == "ledger":
             if payload.get("direction") not in {"expense", "income"}:
@@ -215,11 +241,6 @@ class SyncMutation(APIModel):
             raise ValueError("Delete mutations cannot include payload")
         if self.action is not MutationAction.delete and not self.payload:
             raise ValueError("Create and update mutations require payload")
-        if self.entity_type is SyncEntityType.ledger_entry and self.action in {
-            MutationAction.update,
-            MutationAction.delete,
-        }:
-            raise ValueError("Ledger entries cannot be updated or deleted")
         if self.payload:
             _validate_entity_payload(self.entity_type, self.payload)
         return self
@@ -252,6 +273,7 @@ class MutationResult(APIModel):
     status: MutationStatus
     revision: int | None = None
     reason: str | None = None
+    expected_sequence: int | None = Field(default=None, ge=1)
     server_entity: dict[str, Any] | None = None
 
 

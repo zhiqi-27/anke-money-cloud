@@ -25,6 +25,7 @@ from app.services import (
 from app.services.push_notifications import APNsPushNotificationService
 from app.models import AgentPrincipal
 from app.storage.cosmos import CosmosHouseholdStorage
+from app.storage.protocols import HouseholdStorage
 
 
 anke_session_bearer = HTTPBearer(
@@ -68,13 +69,22 @@ def get_household_storage() -> CosmosHouseholdStorage:
     return CosmosHouseholdStorage(get_settings())
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=4)
+def _push_notification_service(
+    storage: HouseholdStorage,
+) -> APNsPushNotificationService:
+    return APNsPushNotificationService(storage, get_settings())
+
+
 def get_push_notification_service() -> APNsPushNotificationService:
-    return APNsPushNotificationService(get_household_storage(), get_settings())
+    return _push_notification_service(get_household_storage())
 
 
 def cloud_service() -> CloudService:
-    return CloudService(get_household_storage())
+    return CloudService(
+        get_household_storage(),
+        change_notifier=get_push_notification_service().notify_household,
+    )
 
 
 def auth_service() -> AuthService:

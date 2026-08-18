@@ -272,8 +272,62 @@ entities by household and sends one collapsed background notification per househ
 The notification is a data-free hint; clients still authorize and pull changes from
 the canonical sync API, so APNs is neither a data transport nor a new writer.
 
+Agent and client write requests also issue the same data-free APNs hint immediately
+after a successful or idempotently replayed write. This best-effort fast path keeps
+Skill writes near real time on Flex Consumption; Change Feed remains the durable
+fallback, and notification failures never roll back committed financial data.
+
 The trigger uses a separately provisioned lease container and never creates Azure
 resources at runtime. If APNs or background delivery is unavailable, active clients
 fall back to the existing cursor pull every 30 seconds and BGAppRefresh provides an
 additional best-effort opportunity. Rollback disables the Change Feed trigger and
 token registration route; ordered push/pull and cursor compatibility are unchanged.
+
+## Approved amendment · 2026-08-17 · Owner-device ledger lifecycle synchronization
+
+The authenticated owner iOS replica may synchronize ledger updates and tombstone
+deletes through the ordered device mutation endpoint. This is required to preserve
+the iOS product contract for editing an entry, closing an allocation, and deleting
+an entry across the owner's devices. The server still requires the current positive
+base revision, returns explicit stale-write conflicts, assigns the new revision,
+and retains the existing tombstone and audit behavior.
+
+This does not add ledger mutation or deletion to the Agent API, MCP, or Skill.
+Remote Agent ledger writes remain append-only and expose only `ledger:create`.
+There is no Cosmos schema or financial-data migration. Rollback may reject new
+owner-device update/delete mutations, but clients that already accepted them must
+continue to pull their resulting revisions and tombstones.
+
+An outbox sequence gap is a recoverable transport condition, not a durable mutation
+outcome. The service returns the device's `expectedSequence` without persisting the
+temporary rejection, and the client renumbers its still-local ordered mutations
+before retrying them with their original idempotency IDs. This repairs gaps left by
+local queue compaction without weakening per-device ordering or replay protection.
+
+## Approved amendment · 2026-08-18 · Paginated reads and confirmed ledger batches
+
+The existing `ledger:read` and `assets:read` capabilities accept inclusive date
+filters and opaque continuation cursors so an authorized Agent can transfer a
+complete reporting period without a fixed 500-record ceiling. The response remains
+structured source data; report generation and visualization belong to the Agent
+host and do not create a server-side report entity.
+
+The existing `ledger:create` capability also exposes a batch form containing at
+most 25 individually validated entries. The Skill must summarize the complete
+proposed batch and obtain one explicit confirmation immediately before the call.
+Each entry retains its own entity ID and idempotency key and is committed through
+the existing append-only entity/operation/audit transaction. Retrying the same
+batch safely replays already accepted entries and continues remaining entries;
+the service creates no import session, batch-history entity, or rollback record.
+
+The tool surface therefore contains seven tools backed by the same six scopes.
+This supersedes earlier references to an exact six-tool MCP surface without
+changing the six-scope authorization boundary.
+
+This amendment does not accept raw bank or payment documents, update or delete
+ledger history, enable bulk asset changes, add a scope, or alter the API Key
+format. Existing full-capability keys gain the confirmed batch form under the
+already granted `ledger:create` scope. Internal redacted audit remains mandatory,
+but no App import-history, batch-undo, or audit UI is required. Rollback removes
+the batch route/tool and date-page arguments while retaining every entry and audit
+event already accepted through the ordinary ledger contract.

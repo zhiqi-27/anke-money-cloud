@@ -118,6 +118,7 @@ class ApiContractTest(unittest.TestCase):
         self.assertNotIn("/api/v1/agent-connections", paths)
         self.assertNotIn("/agent/v1/token/refresh", paths)
         self.assertIn("/agent/v1/ledger/entries", paths)
+        self.assertIn("/agent/v1/ledger/entries/batch", paths)
         self.assertIn("/agent/v1/assets", paths)
         self.assertIn("/agent/v1/assets/{account_id}", paths)
         self.assertIn("/agent/v1/categories", paths)
@@ -141,6 +142,7 @@ class ApiContractTest(unittest.TestCase):
         }
         self.assertEqual(agent_methods, {
             "/agent/v1/ledger/entries": {"get", "post"},
+            "/agent/v1/ledger/entries/batch": {"post"},
             "/agent/v1/assets": {"get"},
             "/agent/v1/assets/{account_id}": {"patch"},
             "/agent/v1/categories": {"get"},
@@ -536,6 +538,46 @@ class ApiContractTest(unittest.TestCase):
                 "amountInFen": 8800,
             },
         )
+        batch_body = {
+            "entries": [
+                {
+                    "id": "55555555-3333-3333-3333-333333333333",
+                    "idempotencyKey": "55555555-4444-4444-4444-444444444444",
+                    "kind": "transaction",
+                    "direction": "expense",
+                    "occurredAt": "2026-08-06T00:00:00Z",
+                    "monthStart": "2026-08-01",
+                    "channelId": "cash",
+                    "categoryId": "grocery",
+                    "amountInFen": 1200,
+                },
+                {
+                    "id": "66666666-3333-3333-3333-333333333333",
+                    "idempotencyKey": "66666666-4444-4444-4444-444444444444",
+                    "kind": "transaction",
+                    "direction": "income",
+                    "occurredAt": "2026-08-07T00:00:00Z",
+                    "monthStart": "2026-08-01",
+                    "channelId": None,
+                    "categoryId": "salary",
+                    "amountInFen": 9900,
+                },
+            ]
+        }
+        batch = self.client.post(
+            "/agent/v1/ledger/entries/batch",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json=batch_body,
+        )
+        batch_replay = self.client.post(
+            "/agent/v1/ledger/entries/batch",
+            headers={"Authorization": f"Bearer {agent_token}"},
+            json=batch_body,
+        )
+        first_page = self.client.get(
+            "/agent/v1/ledger/entries?limit=2&start_date=2026-08-01&end_date=2026-08-31",
+            headers={"Authorization": f"Bearer {agent_token}"},
+        )
         with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
             owner_push = self.client.post(
                 "/api/v1/sync/push",
@@ -573,11 +615,18 @@ class ApiContractTest(unittest.TestCase):
         })
         self.assertFalse(agent_write.json()["replayed"])
         self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(batch.status_code, 200)
+        self.assertEqual(batch.json()["createdCount"], 2)
+        self.assertEqual(batch_replay.json()["replayedCount"], 2)
+        self.assertTrue(first_page.json()["hasMore"])
+        self.assertIsNotNone(first_page.json()["nextCursor"])
         self.assertEqual(owner_push.status_code, 200)
         self.assertEqual(
             {item["entityId"] for item in owner_pull.json()["changes"]},
             {
                 "33333333-3333-3333-3333-333333333333",
+                "55555555-3333-3333-3333-333333333333",
+                "66666666-3333-3333-3333-333333333333",
                 "cccccccc-cccc-cccc-cccc-cccccccccccc",
             },
         )

@@ -71,8 +71,10 @@ APIs accept only that Anke session token.
 - `POST /api/v1/migrations` — stage a verified Local snapshot
 - `POST /api/v1/migrations/activate` — activate a staged manifest
 - `GET|POST|DELETE /api/v1/agent-api-key` — manage the single workspace API Key
-- `/agent/v1/*` — six fixed Agent capabilities
-- `POST /mcp` — Remote MCP Streamable HTTP endpoint backed by the same service
+- `/agent/v1/*` — six fixed Agent scopes, including paginated date reads and
+  confirmed ledger batches of at most 25 entries
+- `POST /mcp` — seven-tool Remote MCP Streamable HTTP endpoint backed by the
+  same service
 
 The household is always resolved from the verified Anke user ID. Sync and
 migration payloads cannot choose a household or actor. Normal entity deletion and
@@ -80,7 +82,7 @@ privacy erasure are separate operations.
 
 Agent endpoints use one workspace API Key as a separate bearer boundary. Plaintext
 is returned only on creation or reset; the service retains only its SHA-256 hash
-and display prefix. Direct Agent HTTP and Remote MCP share the same six capability
+and display prefix. Direct Agent HTTP and Remote MCP share the same six scope
 checks, rate limits, idempotency, and audit behavior.
 
 ## Configuration

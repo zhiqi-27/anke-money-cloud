@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
 import json
 import time
 import unittest
@@ -10,7 +11,17 @@ import httpx
 
 from app.auth import AuthenticatedIdentity
 from app.config import Settings
-from app.models import DeviceRegistration, PushTokenRegistration
+from app.models import (
+    AgentLedgerEntryCreate,
+    AgentPrincipal,
+    AgentScope,
+    DeviceRegistration,
+    MigrationManifest,
+    MigrationSourceMode,
+    MigrationUploadRequest,
+    OperationSource,
+    PushTokenRegistration,
+)
 from app.services import CloudService
 from app.services.push_notifications import APNsPushNotificationService
 from app.storage.in_memory import InMemoryHouseholdStorage
@@ -55,6 +66,23 @@ class PushNotificationTest(unittest.TestCase):
             ),
         )
         self.household_id = str(bootstrap.household_id)
+        digest = hashlib.sha256(b"[]").hexdigest()
+        session_id = uuid4()
+        self.cloud.stage_migration(
+            self.identity,
+            MigrationUploadRequest(
+                device_id=self.device_id,
+                manifest=MigrationManifest(
+                    session_id=session_id,
+                    source_mode=MigrationSourceMode.local,
+                    schema_version=1,
+                    record_counts={},
+                    content_digest=digest,
+                ),
+                items=[],
+            ),
+        )
+        self.cloud.activate_migration(self.identity, session_id, digest)
         self.cloud.register_push_token(
             self.identity,
             PushTokenRegistration(
@@ -105,6 +133,67 @@ class PushNotificationTest(unittest.TestCase):
 
         self.assertEqual(result.disabled, 1)
         self.assertEqual(self.storage.active_push_tokens(self.household_id), [])
+
+    def test_agent_write_notifies_immediately_and_replay_retries_notification(self):
+        notifications = []
+        cloud = CloudService(
+            self.storage,
+            change_notifier=lambda household_id: notifications.append(household_id),
+        )
+        principal = AgentPrincipal(
+            household_id=self.household_id,
+            connection_id=uuid4(),
+            scopes=[AgentScope.ledger_create],
+            integration=OperationSource.skill,
+        )
+        request = AgentLedgerEntryCreate(
+            id=uuid4(),
+            idempotency_key=uuid4(),
+            kind="transaction",
+            direction="expense",
+            occurred_at=datetime.now(UTC),
+            month_start=datetime.now(UTC).date().replace(day=1),
+            channel_id="cash",
+            category_id="grocery",
+            amount_in_fen=8500,
+        )
+
+        first = cloud.agent_create_ledger_entry(principal, request)
+        replay = cloud.agent_create_ledger_entry(principal, request)
+
+        self.assertFalse(first.replayed)
+        self.assertTrue(replay.replayed)
+        self.assertEqual(notifications, [self.household_id, self.household_id])
+
+    def test_notification_failure_never_rolls_back_agent_write(self):
+        def fail_notification(_: str) -> None:
+            raise RuntimeError("synthetic APNs failure")
+
+        cloud = CloudService(self.storage, change_notifier=fail_notification)
+        principal = AgentPrincipal(
+            household_id=self.household_id,
+            connection_id=uuid4(),
+            scopes=[AgentScope.ledger_create],
+            integration=OperationSource.skill,
+        )
+        request = AgentLedgerEntryCreate(
+            id=uuid4(),
+            idempotency_key=uuid4(),
+            kind="transaction",
+            direction="expense",
+            occurred_at=datetime.now(UTC),
+            month_start=datetime.now(UTC).date().replace(day=1),
+            channel_id="cash",
+            category_id="grocery",
+            amount_in_fen=8500,
+        )
+
+        result = cloud.agent_create_ledger_entry(principal, request)
+
+        self.assertFalse(result.replayed)
+        self.assertIsNotNone(
+            self.storage.read_household_document(self.household_id, str(request.id))
+        )
 
 
 if __name__ == "__main__":

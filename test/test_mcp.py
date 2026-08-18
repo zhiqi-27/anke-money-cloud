@@ -53,7 +53,7 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         )
         self.cloud.activate_migration(self.identity, session_id, digest)
 
-    async def test_streamable_http_exposes_only_six_tools_and_audits_idempotent_write(self):
+    async def test_streamable_http_exposes_seven_tools_and_audits_idempotent_writes(self):
         connection = self.cloud.create_agent_api_key(self.identity, self.access)
         entry_id = str(uuid4())
         idempotency_key = str(uuid4())
@@ -68,9 +68,27 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
             "category_id": "grocery",
             "amount_in_fen": 8_800,
         }
+        batch_entry_ids = [str(uuid4()), str(uuid4())]
+        batch_arguments = {
+            "entries": [
+                {
+                    "id": entry_id,
+                    "idempotencyKey": str(uuid4()),
+                    "kind": "transaction",
+                    "direction": "income" if index else "expense",
+                    "occurredAt": f"2026-08-0{7 + index}T01:00:00Z",
+                    "monthStart": "2026-08-01",
+                    "channelId": None if index else "cash",
+                    "categoryId": "salary" if index else "grocery",
+                    "amountInFen": 10_000 + index,
+                }
+                for index, entry_id in enumerate(batch_entry_ids)
+            ]
+        }
         expected_tools = [
             "ledger_read",
             "ledger_create",
+            "ledger_create_batch",
             "assets_read",
             "assets_update",
             "categories_read",
@@ -142,13 +160,37 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
                         )
                         first = await client.call_tool("ledger_create", arguments)
                         replay = await client.call_tool("ledger_create", arguments)
+                        batch = await client.call_tool(
+                            "ledger_create_batch", batch_arguments
+                        )
+                        batch_replay = await client.call_tool(
+                            "ledger_create_batch", batch_arguments
+                        )
+                        first_page = await client.call_tool(
+                            "ledger_read",
+                            {
+                                "limit": 2,
+                                "start_date": "2026-08-01",
+                                "end_date": "2026-08-31",
+                            },
+                        )
 
         self.assertFalse(first.is_error)
         self.assertFalse(replay.is_error)
+        self.assertFalse(batch.is_error)
+        self.assertFalse(batch_replay.is_error)
         first_payload = json.loads(first.content[0].text)
         replay_payload = json.loads(replay.content[0].text)
         self.assertFalse(first_payload["replayed"])
         self.assertTrue(replay_payload["replayed"])
+        batch_payload = json.loads(batch.content[0].text)
+        batch_replay_payload = json.loads(batch_replay.content[0].text)
+        first_page_payload = json.loads(first_page.content[0].text)
+        self.assertEqual(batch_payload["createdCount"], 2)
+        self.assertEqual(batch_payload["replayedCount"], 0)
+        self.assertEqual(batch_replay_payload["replayedCount"], 2)
+        self.assertTrue(first_page_payload["hasMore"])
+        self.assertIsNotNone(first_page_payload["nextCursor"])
         audit = self.cloud.audit(self.identity, None, 100)
         event = next(item for item in audit.events if item.target_id == entry_id)
         self.assertEqual(event.actor_id, str(connection.connection_id))
@@ -156,6 +198,7 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.source, "skill")
         self.assertEqual(event.idempotency_key, idempotency_key)
         self.assertEqual(event.change_summary["after"]["amountInFen"], 8_800)
+        self.assertTrue(set(batch_entry_ids).issubset({item.target_id for item in audit.events}))
         pulled = self.cloud.pull(self.identity, None, 100)
         self.assertIn(entry_id, {item.entity_id for item in pulled.changes})
 

@@ -7,6 +7,8 @@ from pydantic import ValidationError
 from app.models import (
     Actor,
     ActorType,
+    AgentLedgerBatchCreate,
+    AgentLedgerEntryCreate,
     EntryKind,
     LedgerDirection,
     LedgerEntryCreate,
@@ -86,6 +88,30 @@ class LedgerDocumentModelTest(unittest.TestCase):
             make_request(occurred_at=datetime(2026, 8, 1))
         with self.assertRaises(ValidationError):
             make_request(month_start=date(2026, 8, 2))
+
+    def test_batch_rejects_duplicate_ids_keys_and_more_than_25_entries(self):
+        entry = AgentLedgerEntryCreate(
+            id=uuid4(),
+            idempotency_key=uuid4(),
+            kind="transaction",
+            direction="expense",
+            occurred_at=datetime(2026, 8, 1, tzinfo=UTC),
+            month_start=date(2026, 8, 1),
+            channel_id="channel:cash",
+            category_id="category:dining",
+            amount_in_fen=100,
+        )
+        with self.assertRaises(ValidationError):
+            AgentLedgerBatchCreate(entries=[entry, entry])
+        with self.assertRaises(ValidationError):
+            AgentLedgerBatchCreate(
+                entries=[
+                    entry.model_copy(
+                        update={"id": uuid4(), "idempotency_key": uuid4()}
+                    )
+                    for _ in range(26)
+                ]
+            )
 
 
 if __name__ == "__main__":
