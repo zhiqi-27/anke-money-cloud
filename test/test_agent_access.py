@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 import hashlib
 import unittest
 from uuid import uuid4
@@ -297,6 +297,30 @@ class AgentAccessTest(unittest.TestCase):
 
         self.assertFalse(first.replayed)
         self.assertTrue(replay.replayed)
+        updated_account = self.storage.read_household_document(
+            str(principal.household_id), str(account_id)
+        )
+        self.assertEqual(updated_account["payload"]["amountInFen"], 1_200)
+        self.assertEqual(updated_account["revision"], 2)
+        self.assertEqual(
+            updated_account["payload"]["balanceObservedAt"],
+            now.isoformat().replace("+00:00", "Z"),
+        )
+
+        historical = AgentAssetUpdate(
+            snapshot_id=uuid4(),
+            idempotency_key=uuid4(),
+            amount_in_fen=800,
+            observed_at=now - timedelta(days=1),
+        )
+        self.cloud.agent_update_asset(principal, account_id, historical)
+        account_after_historical_snapshot = self.storage.read_household_document(
+            str(principal.household_id), str(account_id)
+        )
+        self.assertEqual(
+            account_after_historical_snapshot["payload"]["amountInFen"], 1_200
+        )
+        self.assertEqual(account_after_historical_snapshot["revision"], 2)
         self.assertTrue(self.cloud.agent_list_assets(principal, 20).items)
         current_assets = self.cloud.agent_list_assets(
             principal,

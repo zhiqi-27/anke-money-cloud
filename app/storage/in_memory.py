@@ -540,6 +540,7 @@ class InMemoryHouseholdStorage:
         payload: dict,
         change_summary: dict,
         now: datetime,
+        related_update: dict | None = None,
     ) -> tuple[dict, bool]:
         request_hash = canonical_write_hash(
             actor=actor,
@@ -615,6 +616,15 @@ class InMemoryHouseholdStorage:
                 "changeSummary": change_summary,
                 "createdAt": timestamp,
             }
+            if related_update is not None:
+                related_id = related_update.get("id")
+                current_related = self._items.get((household_id, related_id))
+                if current_related is None:
+                    raise ValueError("Related entity not found")
+                if current_related.get("revision") != related_update.get("revision", 0) - 1:
+                    raise ValueError("Related entity changed concurrently")
+                self._items[(household_id, related_id)] = dict(related_update)
+                self._changes.setdefault(household_id, []).append(dict(related_update))
             self._items[(household_id, entity_id)] = document
             self._items[operation_key] = operation
             self._items[(household_id, audit["id"])] = audit

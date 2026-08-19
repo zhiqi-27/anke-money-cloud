@@ -726,6 +726,7 @@ class CosmosHouseholdStorage:
         payload: dict,
         change_summary: dict,
         now: datetime,
+        related_update: dict | None = None,
     ) -> tuple[dict, bool]:
         request_hash = canonical_write_hash(
             actor=actor,
@@ -750,7 +751,10 @@ class CosmosHouseholdStorage:
             return result, True
         if self.read_household_document(household_id, entity_id) is not None:
             raise ValueError("Entity already exists")
-        change_sequence, household_operation = self._next_change_sequence(household_id)
+        first_change_sequence, household_operation = self._next_change_sequences(
+            household_id,
+            2 if related_update is not None else 1,
+        )
         timestamp = now.isoformat().replace("+00:00", "Z")
         document = {
             "id": entity_id,
@@ -764,7 +768,7 @@ class CosmosHouseholdStorage:
             "actor": actor.model_dump(mode="json"),
             "operationId": idempotency_key,
             "lastAcceptedMutationId": idempotency_key,
-            "changeSequence": change_sequence,
+            "changeSequence": first_change_sequence + (1 if related_update is not None else 0),
             "payload": payload,
         }
         operation = {
@@ -801,14 +805,26 @@ class CosmosHouseholdStorage:
             "changeSummary": change_summary,
             "createdAt": timestamp,
         }
+        batch_operations = [
+            ("create", (document,), {}),
+            ("create", (operation,), {}),
+            ("create", (audit,), {}),
+            household_operation,
+        ]
+        if related_update is not None:
+            related_update = dict(related_update)
+            related_update["changeSequence"] = first_change_sequence
+            batch_operations.insert(
+                0,
+                (
+                    "replace",
+                    (related_update["id"], related_update),
+                    self._etag_kwargs(related_update),
+                ),
+            )
         try:
             self._entities_container().execute_item_batch(
-                batch_operations=[
-                    ("create", (document,), {}),
-                    ("create", (operation,), {}),
-                    ("create", (audit,), {}),
-                    household_operation,
-                ],
+                batch_operations=batch_operations,
                 partition_key=household_id,
             )
         except (CosmosResourceExistsError, CosmosBatchOperationError) as exc:
@@ -1583,12 +1599,17 @@ class CosmosHouseholdStorage:
         return bool(result and result[0] > 0)
 
     def _next_change_sequence(self, household_id: str) -> tuple[int, tuple]:
+        return self._next_change_sequences(household_id, 1)
+
+    def _next_change_sequences(self, household_id: str, count: int) -> tuple[int, tuple]:
+        if count < 1:
+            raise ValueError("Change sequence count must be positive")
         household = self.read_household_document(household_id, household_id)
         if household is None or household.get("entityType") != "household":
             raise RuntimeError("Household document is missing")
         updated = dict(household)
         sequence = int(updated.get("lastChangeSequence", 0)) + 1
-        updated["lastChangeSequence"] = sequence
+        updated["lastChangeSequence"] = sequence + count - 1
         updated["updatedAt"] = self._now()
         operation = (
             "replace",

@@ -280,6 +280,21 @@ class CloudService:
             "observedAt": request.observed_at.isoformat().replace("+00:00", "Z"),
             "memberProfileId": request.member_profile_id,
         }
+        now = datetime.now(UTC)
+        related_update = None
+        if self._should_materialize_asset_balance(before, request.observed_at):
+            related_update = dict(account)
+            related_payload = dict(account.get("payload") or account)
+            related_payload["amountInFen"] = request.amount_in_fen
+            related_payload["balanceObservedAt"] = request.observed_at.isoformat().replace(
+                "+00:00", "Z"
+            )
+            related_update["payload"] = related_payload
+            related_update["revision"] = int(account.get("revision", 0)) + 1
+            related_update["updatedAt"] = now.isoformat().replace("+00:00", "Z")
+            related_update["actor"] = actor.model_dump(mode="json")
+            related_update["operationId"] = str(request.idempotency_key)
+            related_update["lastAcceptedMutationId"] = str(request.idempotency_key)
         document, replayed = self._storage.create_agent_entity(
             str(principal.household_id),
             actor,
@@ -291,13 +306,25 @@ class CloudService:
             principal.integration.value,
             payload,
             {"before": before, "after": after},
-            datetime.now(UTC),
+            now,
+            related_update=related_update,
         )
         self._notify_changes(str(principal.household_id))
         return AgentEntityCreateResponse(
             item=self._agent_entity_view(document),
             replayed=replayed,
         )
+
+    @staticmethod
+    def _should_materialize_asset_balance(before: dict, observed_at: datetime) -> bool:
+        prior_text = before.get("observedAt")
+        if not isinstance(prior_text, str):
+            return True
+        try:
+            prior = datetime.fromisoformat(prior_text.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        return observed_at >= prior
 
     def _asset_balance_before(self, household_id: str, account: dict) -> dict:
         snapshots = self._storage.list_agent_entities(

@@ -860,6 +860,67 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         self.assertEqual(audit["changeSummary"]["after"]["amountInFen"], 8_800)
         self.assertNotIn("must not enter audit", str(audit))
 
+    def test_agent_asset_snapshot_atomically_updates_account_and_uses_two_sequences(self):
+        entities = FakeCosmosContainer()
+        storage = CosmosHouseholdStorage(settings(), container=entities)
+        household_id = str(uuid4())
+        account_id = str(uuid4())
+        now = datetime.now(UTC)
+        now_text = now.isoformat().replace("+00:00", "Z")
+        entities.create_item(body={
+            "id": household_id,
+            "householdId": household_id,
+            "entityType": "household",
+            "status": "active",
+            "lastChangeSequence": 7,
+            "createdAt": now_text,
+            "updatedAt": now_text,
+        })
+        account = {
+            "id": account_id,
+            "householdId": household_id,
+            "entityType": "assetAccount",
+            "revision": 1,
+            "createdAt": now_text,
+            "updatedAt": now_text,
+            "payload": {"name": "Home", "amountInFen": 1_000},
+        }
+        entities.create_item(body=account)
+        updated_account = dict(account)
+        updated_account["revision"] = 2
+        updated_account["payload"] = {"name": "Home", "amountInFen": 1_200}
+        snapshot_id = str(uuid4())
+
+        storage.create_agent_entity(
+            household_id,
+            Actor(type=ActorType.agent, id=str(uuid4())),
+            "assetSnapshot",
+            snapshot_id,
+            str(uuid4()),
+            "assets:update",
+            "assets.update",
+            "skill",
+            {
+                "accountId": account_id,
+                "amountInFen": 1_200,
+                "observedAt": now_text,
+            },
+            {"before": {"amountInFen": 1_000}, "after": {"amountInFen": 1_200}},
+            now,
+            related_update=updated_account,
+        )
+
+        batch, partition = entities.batch_calls[-1]
+        self.assertEqual(partition, household_id)
+        self.assertEqual(len(batch), 5)
+        persisted_account = entities.items[(household_id, account_id)]
+        persisted_snapshot = entities.items[(household_id, snapshot_id)]
+        persisted_household = entities.items[(household_id, household_id)]
+        self.assertEqual(persisted_account["payload"]["amountInFen"], 1_200)
+        self.assertEqual(persisted_account["changeSequence"], 8)
+        self.assertEqual(persisted_snapshot["changeSequence"], 9)
+        self.assertEqual(persisted_household["lastChangeSequence"], 9)
+
     def test_cosmos_retention_purges_old_tombstone_payload_and_deletes_old_audit(self):
         entities = FakeCosmosContainer()
         storage = CosmosHouseholdStorage(
