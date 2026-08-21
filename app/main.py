@@ -26,6 +26,10 @@ from app.dependencies import (
 from app.models import (
     AgentAPIKeyCreated,
     AgentAPIKeyView,
+    AgentAssetBatchCreate,
+    AgentAssetBatchCreateResponse,
+    AgentAssetCreate,
+    AgentAssetCreateResponse,
     AgentAssetUpdate,
     AgentLedgerBatchCreate,
     AgentLedgerBatchCreateResponse,
@@ -431,6 +435,44 @@ async def agent_list_assets(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@fastapi_app.post(
+    "/agent/v1/assets",
+    tags=["agent"],
+    response_model=AgentAssetCreateResponse,
+    summary="Create one asset account with an initial snapshot",
+)
+async def agent_create_asset(
+    request: AgentAssetCreate,
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentAssetCreateResponse:
+    try:
+        return service.agent_create_asset(principal, request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@fastapi_app.post(
+    "/agent/v1/assets/batch",
+    tags=["agent"],
+    response_model=AgentAssetBatchCreateResponse,
+    summary="Create up to 25 independently idempotent asset accounts",
+)
+async def agent_create_asset_batch(
+    request: AgentAssetBatchCreate,
+    principal: AgentPrincipal = Depends(current_agent),
+    service: CloudService = Depends(cloud_service),
+) -> AgentAssetBatchCreateResponse:
+    try:
+        return service.agent_create_asset_batch(principal, request)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient agent scope") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @fastapi_app.patch(

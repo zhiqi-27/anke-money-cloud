@@ -120,6 +120,97 @@ class AgentAssetUpdate(APIModel):
         return value.astimezone(UTC)
 
 
+class AssetAccountKind(str, Enum):
+    asset = "asset"
+    liability = "liability"
+
+
+class AssetGroup(str, Enum):
+    financial = "financial"
+    living = "living"
+    interest = "interest"
+    receivable = "receivable"
+
+
+class AssetMoneyBucket(str, Enum):
+    flexible = "flexible"
+    stable = "stable"
+    risk = "risk"
+
+
+class AgentAssetCreate(APIModel):
+    account_id: UUID
+    snapshot_id: UUID
+    idempotency_key: UUID
+    name: str = Field(min_length=1, max_length=80)
+    kind: AssetAccountKind
+    asset_group: AssetGroup | None = None
+    category_id: str = Field(min_length=1, max_length=128)
+    money_bucket: AssetMoneyBucket | None = None
+    amount_in_fen: StrictInt = Field(ge=0, le=9_000_000_000_000_000)
+    observed_at: datetime
+    member_profile_id: str | None = Field(default=None, max_length=256)
+
+    @field_validator("name")
+    @classmethod
+    def name_is_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
+    @field_validator("observed_at")
+    @classmethod
+    def observed_at_requires_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("observedAt must include a timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def classification_is_consistent(self) -> "AgentAssetCreate":
+        if self.account_id == self.snapshot_id:
+            raise ValueError("accountId and snapshotId must be different")
+        if self.kind is AssetAccountKind.liability:
+            if self.asset_group is not None or self.money_bucket is not None:
+                raise ValueError("Liability accounts cannot have assetGroup or moneyBucket")
+            return self
+        if self.asset_group is None:
+            raise ValueError("Asset accounts require assetGroup")
+        if self.asset_group is AssetGroup.financial and self.money_bucket is None:
+            raise ValueError("Financial asset accounts require moneyBucket")
+        if self.asset_group is not AssetGroup.financial and self.money_bucket is not None:
+            raise ValueError("Only financial asset accounts can have moneyBucket")
+        return self
+
+
+class AgentAssetCreateResponse(APIModel):
+    account: AgentEntityView
+    initial_snapshot: AgentEntityView
+    replayed: bool
+
+
+class AgentAssetBatchCreate(APIModel):
+    accounts: list[AgentAssetCreate] = Field(min_length=1, max_length=25)
+
+    @model_validator(mode="after")
+    def accounts_have_unique_ids(self) -> "AgentAssetBatchCreate":
+        account_ids = [item.account_id for item in self.accounts]
+        snapshot_ids = [item.snapshot_id for item in self.accounts]
+        idempotency_keys = [item.idempotency_key for item in self.accounts]
+        all_entity_ids = account_ids + snapshot_ids
+        if len(all_entity_ids) != len(set(all_entity_ids)):
+            raise ValueError("Batch asset account and snapshot IDs must be unique")
+        if len(idempotency_keys) != len(set(idempotency_keys)):
+            raise ValueError("Batch asset idempotency keys must be unique")
+        return self
+
+
+class AgentAssetBatchCreateResponse(APIModel):
+    results: list[AgentAssetCreateResponse]
+    created_count: int = Field(ge=0)
+    replayed_count: int = Field(ge=0)
+
+
 class AgentEntityView(APIModel):
     entity_type: str
     entity_id: str

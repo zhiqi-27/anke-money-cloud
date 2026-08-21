@@ -921,6 +921,80 @@ class CosmosHouseholdStorageTest(unittest.TestCase):
         self.assertEqual(persisted_snapshot["changeSequence"], 9)
         self.assertEqual(persisted_household["lastChangeSequence"], 9)
 
+    def test_agent_asset_create_atomically_creates_account_and_initial_snapshot(self):
+        entities = FakeCosmosContainer()
+        storage = CosmosHouseholdStorage(settings(), container=entities)
+        household_id = str(uuid4())
+        account_id = str(uuid4())
+        snapshot_id = str(uuid4())
+        operation_id = str(uuid4())
+        now = datetime.now(UTC)
+        now_text = now.isoformat().replace("+00:00", "Z")
+        entities.create_item(body={
+            "id": household_id,
+            "householdId": household_id,
+            "entityType": "household",
+            "status": "active",
+            "lastChangeSequence": 0,
+            "createdAt": now_text,
+            "updatedAt": now_text,
+        })
+
+        account, replayed = storage.create_agent_entity(
+            household_id,
+            Actor(type=ActorType.agent, id=str(uuid4())),
+            "assetAccount",
+            account_id,
+            operation_id,
+            "assets:update",
+            "assets.create",
+            "skill",
+            {"name": "Brokerage", "amountInFen": 1_250_000},
+            {"before": None, "after": {"initialSnapshotId": snapshot_id}},
+            now,
+            related_creates=[{
+                "entityType": "assetSnapshot",
+                "entityId": snapshot_id,
+                "payload": {
+                    "accountId": account_id,
+                    "amountInFen": 1_250_000,
+                    "observedAt": now_text,
+                },
+            }],
+        )
+        replay_account, replayed_again = storage.create_agent_entity(
+            household_id,
+            Actor.model_validate(account["actor"]),
+            "assetAccount",
+            account_id,
+            operation_id,
+            "assets:update",
+            "assets.create",
+            "skill",
+            {"name": "Brokerage", "amountInFen": 1_250_000},
+            {"before": None, "after": {"initialSnapshotId": snapshot_id}},
+            now,
+            related_creates=[{
+                "entityType": "assetSnapshot",
+                "entityId": snapshot_id,
+                "payload": {
+                    "accountId": account_id,
+                    "amountInFen": 1_250_000,
+                    "observedAt": now_text,
+                },
+            }],
+        )
+
+        self.assertFalse(replayed)
+        self.assertTrue(replayed_again)
+        self.assertEqual(account["id"], replay_account["id"])
+        batch, partition = entities.batch_calls[-1]
+        self.assertEqual(partition, household_id)
+        self.assertEqual(len(batch), 5)
+        self.assertEqual(entities.items[(household_id, account_id)]["changeSequence"], 1)
+        self.assertEqual(entities.items[(household_id, snapshot_id)]["changeSequence"], 2)
+        self.assertEqual(entities.items[(household_id, household_id)]["lastChangeSequence"], 2)
+
     def test_cosmos_retention_purges_old_tombstone_payload_and_deletes_old_audit(self):
         entities = FakeCosmosContainer()
         storage = CosmosHouseholdStorage(

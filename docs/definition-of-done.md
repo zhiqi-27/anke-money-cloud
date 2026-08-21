@@ -147,3 +147,18 @@ Cosmos behavior, a signed iOS client, or Production deletion.
 
 Local completion does not prove APNs delivery, iOS background scheduling, deployed
 Change Feed behavior, or Production readiness.
+
+## Agent asset-account creation checkpoint
+
+- [x] `assets_create` atomically creates one account and its immutable initial
+      snapshot with stable entity and idempotency UUIDs.
+- [x] `assets_create_batch` accepts 1 through 25 independently idempotent account
+      proposals after one complete confirmation.
+- [x] Existing API Keys retain access through the unchanged `assets:update`
+      capability; no credential or Cosmos schema migration is required.
+- [x] The service rejects missing, archived, or classification-incompatible asset
+      categories and does not turn `assets_update` into implicit creation.
+- [x] HTTP, MCP, in-memory, and Cosmos transaction tests cover create, replay,
+      batch counts, pull visibility, redacted audit, and consecutive change order.
+- [ ] Development deployment and authenticated remote HTTP/MCP creation are
+      recorded separately before this capability is described as deployed.

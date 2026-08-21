@@ -130,6 +130,7 @@ class HouseholdStorage(Protocol):
         change_summary: dict,
         now: datetime,
         related_update: dict | None = None,
+        related_creates: list[dict] | None = None,
     ) -> tuple[dict, bool]: ...
 
     def record_agent_read(

@@ -541,7 +541,13 @@ class InMemoryHouseholdStorage:
         change_summary: dict,
         now: datetime,
         related_update: dict | None = None,
+        related_creates: list[dict] | None = None,
     ) -> tuple[dict, bool]:
+        related_creates = related_creates or []
+        hash_payload = payload if not related_creates else {
+            "primary": payload,
+            "relatedCreates": related_creates,
+        }
         request_hash = canonical_write_hash(
             actor=actor,
             scope=scope,
@@ -549,7 +555,7 @@ class InMemoryHouseholdStorage:
             source=source,
             entity_type=entity_type,
             entity_id=entity_id,
-            payload=payload,
+            payload=hash_payload,
         )
         operation_key = (household_id, f"operation:{idempotency_key}")
         with self._lock:
@@ -567,6 +573,10 @@ class InMemoryHouseholdStorage:
                 return dict(result), True
             if (household_id, entity_id) in self._items:
                 raise ValueError("Entity already exists")
+            for related in related_creates:
+                related_id = related["entityId"]
+                if (household_id, related_id) in self._items:
+                    raise ValueError("Related entity already exists")
             timestamp = now.isoformat().replace("+00:00", "Z")
             document = {
                 "id": entity_id,
@@ -626,9 +636,26 @@ class InMemoryHouseholdStorage:
                 self._items[(household_id, related_id)] = dict(related_update)
                 self._changes.setdefault(household_id, []).append(dict(related_update))
             self._items[(household_id, entity_id)] = document
+            self._changes.setdefault(household_id, []).append(document)
+            for related in related_creates:
+                related_document = {
+                    "id": related["entityId"],
+                    "entityType": related["entityType"],
+                    "householdId": household_id,
+                    "schemaVersion": 1,
+                    "revision": 1,
+                    "createdAt": timestamp,
+                    "updatedAt": timestamp,
+                    "deletedAt": None,
+                    "actor": actor.model_dump(mode="json"),
+                    "operationId": idempotency_key,
+                    "lastAcceptedMutationId": idempotency_key,
+                    "payload": related["payload"],
+                }
+                self._items[(household_id, related_document["id"])] = related_document
+                self._changes.setdefault(household_id, []).append(related_document)
             self._items[operation_key] = operation
             self._items[(household_id, audit["id"])] = audit
-            self._changes.setdefault(household_id, []).append(document)
             return dict(document), False
 
     def record_agent_read(

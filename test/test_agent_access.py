@@ -7,6 +7,8 @@ from app.auth import AuthenticatedIdentity
 from app.models import (
     Actor,
     ActorType,
+    AgentAssetBatchCreate,
+    AgentAssetCreate,
     AgentAssetUpdate,
     AgentLedgerBatchCreate,
     AgentLedgerEntryCreate,
@@ -340,6 +342,77 @@ class AgentAccessTest(unittest.TestCase):
         self.cloud.agent_list_ledger_entries(principal, 20)
         self.assertTrue(self.cloud.agent_list_categories(principal, 20).items)
         self.assertTrue(self.cloud.agent_list_channels(principal, 20).items)
+
+    def test_creates_asset_account_and_initial_snapshot_idempotently_in_batches(self):
+        created = self.cloud.create_agent_api_key(self.identity, self.access)
+        principal = self.access.authenticate(created.api_key)
+        actor = Actor(type=ActorType.agent, id=str(principal.connection_id))
+        now = datetime.now(UTC)
+        household_id = str(principal.household_id)
+        self.storage.create_agent_entity(
+            household_id,
+            actor,
+            "category",
+            "asset-category:stocks",
+            str(uuid4()),
+            "test.seed",
+            "test.seed",
+            "skill",
+            {
+                "name": "Stocks",
+                "scope": "asset",
+                "assetGroup": "financial",
+                "isArchived": False,
+            },
+            {"before": None, "after": {"revision": 1}},
+            now,
+        )
+        request = AgentAssetCreate(
+            account_id=uuid4(),
+            snapshot_id=uuid4(),
+            idempotency_key=uuid4(),
+            name="Brokerage",
+            kind="asset",
+            asset_group="financial",
+            category_id="asset-category:stocks",
+            money_bucket="risk",
+            amount_in_fen=1_250_000,
+            observed_at=now,
+        )
+
+        first = self.cloud.agent_create_asset(principal, request)
+        replay = self.cloud.agent_create_asset(principal, request)
+        batch_request = request.model_copy(
+            update={
+                "account_id": uuid4(),
+                "snapshot_id": uuid4(),
+                "idempotency_key": uuid4(),
+                "name": "Second Brokerage",
+            }
+        )
+        batch = AgentAssetBatchCreate(accounts=[request, batch_request])
+        batch_result = self.cloud.agent_create_asset_batch(principal, batch)
+
+        self.assertFalse(first.replayed)
+        self.assertTrue(replay.replayed)
+        self.assertEqual(first.account.entity_id, str(request.account_id))
+        self.assertEqual(first.initial_snapshot.entity_id, str(request.snapshot_id))
+        self.assertEqual(first.account.payload["amountInFen"], 1_250_000)
+        self.assertEqual(first.initial_snapshot.payload["accountId"], str(request.account_id))
+        self.assertEqual(batch_result.created_count, 1)
+        self.assertEqual(batch_result.replayed_count, 1)
+        pulled = self.cloud.pull(self.identity, None, 20).changes
+        pulled_ids = [change.entity_id for change in pulled]
+        self.assertLess(pulled_ids.index(str(request.account_id)), pulled_ids.index(str(request.snapshot_id)))
+        with self.assertRaisesRegex(ValueError, "Idempotency key"):
+            self.cloud.agent_create_asset(
+                principal, request.model_copy(update={"amount_in_fen": 1_300_000})
+            )
+        audit = self.cloud.audit(self.identity, None, 100)
+        event = next(item for item in audit.events if item.target_id == str(request.account_id))
+        self.assertEqual(event.scope, "assets:update")
+        self.assertEqual(event.action, "assets.create")
+        self.assertEqual(event.change_summary["after"]["initialSnapshotId"], str(request.snapshot_id))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import unittest
+from datetime import UTC, datetime
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -12,6 +13,8 @@ from mcp.types import Implementation
 from app.auth import AuthenticatedIdentity
 from app.main import fastapi_app
 from app.models import (
+    Actor,
+    ActorType,
     DeviceRegistration,
     MigrationManifest,
     MigrationSourceMode,
@@ -53,8 +56,23 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         )
         self.cloud.activate_migration(self.identity, session_id, digest)
 
-    async def test_streamable_http_exposes_seven_tools_and_audits_idempotent_writes(self):
+    async def test_streamable_http_exposes_nine_tools_and_audits_idempotent_writes(self):
         connection = self.cloud.create_agent_api_key(self.identity, self.access)
+        household_id = self.storage.household_for_uid(self.identity.uid)
+        self.assertIsNotNone(household_id)
+        self.storage.create_agent_entity(
+            household_id,
+            Actor(type=ActorType.agent, id=str(connection.connection_id)),
+            "category",
+            "asset-category:stocks",
+            str(uuid4()),
+            "test.seed",
+            "test.seed",
+            "skill",
+            {"name": "Stocks", "scope": "asset", "assetGroup": "financial", "isArchived": False},
+            {"before": None, "after": {"revision": 1}},
+            datetime.now(UTC),
+        )
         entry_id = str(uuid4())
         idempotency_key = str(uuid4())
         arguments = {
@@ -90,6 +108,8 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
             "ledger_create",
             "ledger_create_batch",
             "assets_read",
+            "assets_create",
+            "assets_create_batch",
             "assets_update",
             "categories_read",
             "channels_read",
@@ -174,6 +194,40 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
                                 "end_date": "2026-08-31",
                             },
                         )
+                        asset_arguments = {
+                            "account_id": str(uuid4()),
+                            "snapshot_id": str(uuid4()),
+                            "idempotency_key": str(uuid4()),
+                            "name": "Brokerage",
+                            "kind": "asset",
+                            "asset_group": "financial",
+                            "category_id": "asset-category:stocks",
+                            "money_bucket": "risk",
+                            "amount_in_fen": 1250000,
+                            "observed_at": "2026-08-21T00:00:00Z",
+                        }
+                        asset = await client.call_tool("assets_create", asset_arguments)
+                        asset_replay = await client.call_tool("assets_create", asset_arguments)
+                        asset_batch_arguments = {
+                            "accounts": [{
+                                "accountId": str(uuid4()),
+                                "snapshotId": str(uuid4()),
+                                "idempotencyKey": str(uuid4()),
+                                "name": "Second Brokerage",
+                                "kind": "asset",
+                                "assetGroup": "financial",
+                                "categoryId": "asset-category:stocks",
+                                "moneyBucket": "risk",
+                                "amountInFen": 2500000,
+                                "observedAt": "2026-08-21T00:00:00Z",
+                            }]
+                        }
+                        asset_batch = await client.call_tool(
+                            "assets_create_batch", asset_batch_arguments
+                        )
+                        asset_batch_replay = await client.call_tool(
+                            "assets_create_batch", asset_batch_arguments
+                        )
 
         self.assertFalse(first.is_error)
         self.assertFalse(replay.is_error)
@@ -191,6 +245,14 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(batch_replay_payload["replayedCount"], 2)
         self.assertTrue(first_page_payload["hasMore"])
         self.assertIsNotNone(first_page_payload["nextCursor"])
+        self.assertFalse(asset.is_error)
+        self.assertFalse(asset_replay.is_error)
+        self.assertFalse(asset_batch.is_error)
+        self.assertFalse(asset_batch_replay.is_error)
+        self.assertFalse(json.loads(asset.content[0].text)["replayed"])
+        self.assertTrue(json.loads(asset_replay.content[0].text)["replayed"])
+        self.assertEqual(json.loads(asset_batch.content[0].text)["createdCount"], 1)
+        self.assertEqual(json.loads(asset_batch_replay.content[0].text)["replayedCount"], 1)
         audit = self.cloud.audit(self.identity, None, 100)
         event = next(item for item in audit.events if item.target_id == entry_id)
         self.assertEqual(event.actor_id, str(connection.connection_id))

@@ -82,6 +82,12 @@ whole household partition, not within an entity type.
 `assetSnapshot` is an immutable dated observation. Ledger writes never mutate an
 asset account or create an asset snapshot.
 
+An Agent asset-account create stores the account and its initial snapshot in the
+same household transactional batch as one `operation` and one redacted
+`auditEvent`. Both synchronized entities receive consecutive change sequences.
+The existing `assets:update` capability authorizes this confirmed creation as well
+as later snapshot appends; previously issued full-capability keys need no rewrite.
+
 ### `memberProfile`
 
 An owner-managed reference record for a person a ledger entry or asset snapshot may

@@ -14,6 +14,8 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from app.models import (
+    AgentAssetBatchCreate,
+    AgentAssetCreate,
     AgentAssetUpdate,
     AgentLedgerBatchCreate,
     AgentLedgerEntryCreate,
@@ -78,13 +80,13 @@ def _service() -> CloudService:
 
 mcp_server = MCPServer(
     name="Anke Money",
-    description="Seven non-destructive tools for one authorized Anke Money household.",
+    description="Nine non-destructive tools for one authorized Anke Money household.",
     instructions=(
         "Use only the granted capability. Never infer another household, modify "
         "authorization, delete permanently, send raw statements to Anke Money, or "
-        "perform bulk asset changes. Obtain explicit user confirmation immediately "
-        "before a ledger:create or assets:update call. A ledger batch requires one "
-        "complete batch summary and confirmation. Reuse each idempotency key only "
+        "perform unconfirmed bulk asset changes. Obtain explicit user confirmation "
+        "immediately before any ledger or asset write. Ledger and asset batches each "
+        "require one complete batch summary and confirmation. Reuse each idempotency key only "
         "when retrying that exact write."
     ),
     token_verifier=AgentMCPTokenVerifier(),
@@ -201,6 +203,78 @@ async def assets_read(
     del ctx
     response = _service().agent_list_assets(
         _principal(), limit, cursor, start_date, end_date
+    )
+    return response.model_dump(by_alias=True, mode="json")
+
+
+@mcp_server.tool(
+    name="assets_create",
+    description=(
+        "Create one asset account and its initial dated snapshot atomically after "
+        "explicit user confirmation. Resolve an active asset category first."
+    ),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def assets_create(
+    account_id: UUID,
+    snapshot_id: UUID,
+    idempotency_key: UUID,
+    name: Annotated[str, Field(min_length=1, max_length=80)],
+    kind: str,
+    category_id: Annotated[str, Field(min_length=1, max_length=128)],
+    amount_in_fen: int,
+    observed_at: datetime,
+    asset_group: str | None = None,
+    money_bucket: str | None = None,
+    member_profile_id: str | None = None,
+    ctx: Context | None = None,
+) -> dict:
+    del ctx
+    request = AgentAssetCreate(
+        account_id=account_id,
+        snapshot_id=snapshot_id,
+        idempotency_key=idempotency_key,
+        name=name,
+        kind=kind,
+        asset_group=asset_group,
+        category_id=category_id,
+        money_bucket=money_bucket,
+        amount_in_fen=amount_in_fen,
+        observed_at=observed_at,
+        member_profile_id=member_profile_id,
+    )
+    response = _service().agent_create_asset(_principal(), request)
+    return response.model_dump(by_alias=True, mode="json")
+
+
+@mcp_server.tool(
+    name="assets_create_batch",
+    description=(
+        "Create 1 through 25 asset accounts with initial snapshots after showing "
+        "the complete proposed batch and receiving one explicit confirmation."
+    ),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+async def assets_create_batch(
+    accounts: Annotated[
+        list[AgentAssetCreate],
+        Field(min_length=1, max_length=25),
+    ],
+    ctx: Context | None = None,
+) -> dict:
+    del ctx
+    response = _service().agent_create_asset_batch(
+        _principal(), AgentAssetBatchCreate(accounts=accounts)
     )
     return response.model_dump(by_alias=True, mode="json")
 

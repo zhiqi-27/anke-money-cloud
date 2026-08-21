@@ -120,6 +120,7 @@ class ApiContractTest(unittest.TestCase):
         self.assertIn("/agent/v1/ledger/entries", paths)
         self.assertIn("/agent/v1/ledger/entries/batch", paths)
         self.assertIn("/agent/v1/assets", paths)
+        self.assertIn("/agent/v1/assets/batch", paths)
         self.assertIn("/agent/v1/assets/{account_id}", paths)
         self.assertIn("/agent/v1/categories", paths)
         self.assertIn("/agent/v1/channels", paths)
@@ -143,7 +144,8 @@ class ApiContractTest(unittest.TestCase):
         self.assertEqual(agent_methods, {
             "/agent/v1/ledger/entries": {"get", "post"},
             "/agent/v1/ledger/entries/batch": {"post"},
-            "/agent/v1/assets": {"get"},
+            "/agent/v1/assets": {"get", "post"},
+            "/agent/v1/assets/batch": {"post"},
             "/agent/v1/assets/{account_id}": {"patch"},
             "/agent/v1/categories": {"get"},
             "/agent/v1/channels": {"get"},
@@ -700,6 +702,25 @@ class ApiContractTest(unittest.TestCase):
                             "direction": "expense",
                         },
                     },
+                    {
+                        "mutationId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                        "deviceId": device_id,
+                        "sequence": 4,
+                        "entityType": "category",
+                        "entityId": "asset-category:stocks",
+                        "action": "create",
+                        "occurredAt": "2026-08-05T00:00:00Z",
+                        "payload": {
+                            "name": "Stocks",
+                            "symbolName": "chart.line.uptrend.xyaxis",
+                            "sortOrder": 0,
+                            "isArchived": False,
+                            "isSystem": True,
+                            "scope": "asset",
+                            "assetGroup": "financial",
+                            "moneyBucket": "risk",
+                        },
+                    },
                 ]},
             )
             connection = self.client.post(
@@ -726,6 +747,39 @@ class ApiContractTest(unittest.TestCase):
         snapshot_replay = self.client.patch(
             f"/agent/v1/assets/{account_id}", headers=agent_headers, json=snapshot_body
         )
+        asset_create_body = {
+            "accountId": "11111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "snapshotId": "22222222-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "idempotencyKey": "33333333-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "name": "Brokerage",
+            "kind": "asset",
+            "assetGroup": "financial",
+            "categoryId": "asset-category:stocks",
+            "moneyBucket": "risk",
+            "amountInFen": 1250000,
+            "observedAt": "2026-08-05T01:00:00Z",
+        }
+        asset_created = self.client.post(
+            "/agent/v1/assets", headers=agent_headers, json=asset_create_body
+        )
+        asset_replayed = self.client.post(
+            "/agent/v1/assets", headers=agent_headers, json=asset_create_body
+        )
+        batch_body = {
+            "accounts": [
+                asset_create_body,
+                {
+                    **asset_create_body,
+                    "accountId": "44444444-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "snapshotId": "55555555-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "idempotencyKey": "66666666-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "name": "Second Brokerage",
+                },
+            ]
+        }
+        asset_batch = self.client.post(
+            "/agent/v1/assets/batch", headers=agent_headers, json=batch_body
+        )
         with patch("app.dependencies.get_token_verifier", return_value=FakeTokenVerifier()):
             audit = self.client.get("/api/v1/audit?limit=100", headers=owner_headers)
 
@@ -739,6 +793,12 @@ class ApiContractTest(unittest.TestCase):
         self.assertEqual(snapshot.status_code, 200)
         self.assertFalse(snapshot.json()["replayed"])
         self.assertTrue(snapshot_replay.json()["replayed"])
+        self.assertEqual(asset_created.status_code, 200)
+        self.assertFalse(asset_created.json()["replayed"])
+        self.assertTrue(asset_replayed.json()["replayed"])
+        self.assertEqual(asset_batch.status_code, 200)
+        self.assertEqual(asset_batch.json()["createdCount"], 1)
+        self.assertEqual(asset_batch.json()["replayedCount"], 1)
         self.assertIn('"source":"skill"', audit.text)
         self.assertIn('"idempotencyKey":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"', audit.text)
         self.assertIn('"amountInFen":1000', audit.text)

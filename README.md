@@ -73,7 +73,7 @@ APIs accept only that Anke session token.
 - `GET|POST|DELETE /api/v1/agent-api-key` — manage the single workspace API Key
 - `/agent/v1/*` — six fixed Agent scopes, including paginated date reads and
   confirmed ledger batches of at most 25 entries
-- `POST /mcp` — seven-tool Remote MCP Streamable HTTP endpoint backed by the
+- `POST /mcp` — nine-tool Remote MCP Streamable HTTP endpoint backed by the
   same service
 
 The household is always resolved from the verified Anke user ID. Sync and

@@ -727,7 +727,13 @@ class CosmosHouseholdStorage:
         change_summary: dict,
         now: datetime,
         related_update: dict | None = None,
+        related_creates: list[dict] | None = None,
     ) -> tuple[dict, bool]:
+        related_creates = related_creates or []
+        hash_payload = payload if not related_creates else {
+            "primary": payload,
+            "relatedCreates": related_creates,
+        }
         request_hash = canonical_write_hash(
             actor=actor,
             scope=scope,
@@ -735,7 +741,7 @@ class CosmosHouseholdStorage:
             source=source,
             entity_type=entity_type,
             entity_id=entity_id,
-            payload=payload,
+            payload=hash_payload,
         )
         existing_operation = self._read_operation(household_id, idempotency_key)
         if existing_operation is not None:
@@ -751,9 +757,12 @@ class CosmosHouseholdStorage:
             return result, True
         if self.read_household_document(household_id, entity_id) is not None:
             raise ValueError("Entity already exists")
+        for related in related_creates:
+            if self.read_household_document(household_id, related["entityId"]) is not None:
+                raise ValueError("Related entity already exists")
         first_change_sequence, household_operation = self._next_change_sequences(
             household_id,
-            2 if related_update is not None else 1,
+            1 + len(related_creates) + (1 if related_update is not None else 0),
         )
         timestamp = now.isoformat().replace("+00:00", "Z")
         document = {
@@ -822,6 +831,25 @@ class CosmosHouseholdStorage:
                     self._etag_kwargs(related_update),
                 ),
             )
+        related_sequence = document["changeSequence"] + 1
+        for related in related_creates:
+            related_document = {
+                "id": related["entityId"],
+                "entityType": related["entityType"],
+                "householdId": household_id,
+                "schemaVersion": 1,
+                "revision": 1,
+                "createdAt": timestamp,
+                "updatedAt": timestamp,
+                "deletedAt": None,
+                "actor": actor.model_dump(mode="json"),
+                "operationId": idempotency_key,
+                "lastAcceptedMutationId": idempotency_key,
+                "changeSequence": related_sequence,
+                "payload": related["payload"],
+            }
+            batch_operations.insert(1, ("create", (related_document,), {}))
+            related_sequence += 1
         try:
             self._entities_container().execute_item_batch(
                 batch_operations=batch_operations,

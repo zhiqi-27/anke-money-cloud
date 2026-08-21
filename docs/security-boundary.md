@@ -29,13 +29,17 @@ The key does not expire and has no refresh credential. It stays valid until rese
 revocation, or workspace deletion. Ledger history updates, permanent delete,
 member management, settings, migration, export, authorization management, and
 audit-log operations remain outside the Agent surface. Asset update is limited to
-one appended snapshot. Direct Agent HTTP and Remote MCP verify the same revocable
+one appended snapshot. Asset creation requires an existing compatible category and
+creates only an account plus its initial snapshot; a 1–25 account batch requires
+one complete proposal and explicit confirmation. Direct Agent HTTP and Remote MCP
+verify the same revocable
 key on every request and never receive a client-selected household ID or source.
 
 `ledger:create` may append a confirmed batch of at most 25 entries. Every entry is
 validated and independently idempotent and uses the existing transactional
 entity/operation/audit write. The server does not accept the raw source statement,
-does not expose ledger update/delete, and does not add a bulk asset operation.
+does not expose ledger update/delete, and does not add an unconfirmed bulk asset
+update. Confirmed asset-account creation follows the separate constraints above.
 Date-ranged ledger and asset reads remain inside the same household and return an
 opaque continuation cursor rather than an unrestricted cross-partition export.
 

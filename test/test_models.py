@@ -7,6 +7,8 @@ from pydantic import ValidationError
 from app.models import (
     Actor,
     ActorType,
+    AgentAssetBatchCreate,
+    AgentAssetCreate,
     AgentLedgerBatchCreate,
     AgentLedgerEntryCreate,
     EntryKind,
@@ -111,6 +113,38 @@ class LedgerDocumentModelTest(unittest.TestCase):
                     )
                     for _ in range(26)
                 ]
+            )
+
+    def test_asset_create_requires_consistent_classification_and_unique_batch_ids(self):
+        request = AgentAssetCreate(
+            account_id=uuid4(),
+            snapshot_id=uuid4(),
+            idempotency_key=uuid4(),
+            name="  Brokerage  ",
+            kind="asset",
+            asset_group="financial",
+            category_id="asset-category:stocks",
+            money_bucket="risk",
+            amount_in_fen=120_000,
+            observed_at=datetime(2026, 8, 21, tzinfo=UTC),
+        )
+        self.assertEqual(request.name, "Brokerage")
+        with self.assertRaises(ValidationError):
+            request.model_copy(update={"money_bucket": None}).model_validate(
+                request.model_copy(update={"money_bucket": None}).model_dump()
+            )
+        with self.assertRaises(ValidationError):
+            AgentAssetCreate(
+                **request.model_dump(exclude={"asset_group", "money_bucket"}),
+                asset_group="living",
+                money_bucket="risk",
+            )
+        with self.assertRaises(ValidationError):
+            AgentAssetBatchCreate(accounts=[request, request])
+        with self.assertRaises(ValidationError):
+            AgentAssetCreate(
+                **request.model_dump(exclude={"snapshot_id"}),
+                snapshot_id=request.account_id,
             )
 
 

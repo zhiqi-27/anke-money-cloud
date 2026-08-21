@@ -298,6 +298,30 @@ There is no Cosmos schema or financial-data migration. Rollback may reject new
 owner-device update/delete mutations, but clients that already accepted them must
 continue to pull their resulting revisions and tombstones.
 
+## Approved amendment · 2026-08-21 · Confirmed Agent asset-account creation
+
+The Agent surface may create one asset account together with its immutable initial
+snapshot, or create 1 through 25 such pairs after one complete batch summary and
+explicit owner confirmation. Each pair has stable account, snapshot, and
+idempotency UUIDs. The account, initial snapshot, idempotency operation, redacted
+audit event, and household change-sequence update commit atomically in one Cosmos
+household transaction.
+
+Creation reuses the existing `assets:update` capability so every previously issued
+full-capability API Key works without reset or credential migration. The service
+requires an existing active asset category compatible with the requested account
+kind and asset group. It never guesses a category or silently converts a missing
+account during `assets_update`. Batch items remain independently idempotent and
+have no import job, rollback, delete, or history-replacement authority.
+
+The MCP surface therefore contains nine tools backed by the unchanged six scopes.
+This supersedes the seven-tool count introduced by the 2026-08-18 amendment.
+
+This is an additive API and MCP change with no container, partition, stored-key, or
+existing financial-document migration. Rollback removes the two create routes and
+tools while retaining already-created accounts and snapshots as ordinary owner
+data synchronized to the App.
+
 An outbox sequence gap is a recoverable transport condition, not a durable mutation
 outcome. The service returns the device's `expectedSequence` without persisting the
 temporary rejection, and the client renumbers its still-local ordered mutations

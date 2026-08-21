@@ -9,6 +9,10 @@ from app.auth import AuthenticatedIdentity
 from app.models import (
     AgentAPIKeyCreated,
     AgentAPIKeyView,
+    AgentAssetBatchCreate,
+    AgentAssetBatchCreateResponse,
+    AgentAssetCreate,
+    AgentAssetCreateResponse,
     AgentAssetUpdate,
     AgentLedgerBatchCreate,
     AgentLedgerBatchCreateResponse,
@@ -314,6 +318,124 @@ class CloudService:
             item=self._agent_entity_view(document),
             replayed=replayed,
         )
+
+    def agent_create_asset(
+        self,
+        principal: AgentPrincipal,
+        request: AgentAssetCreate,
+    ) -> AgentAssetCreateResponse:
+        household_id = str(principal.household_id)
+        self._require_active_household(household_id)
+        self._require_agent_scope(
+            principal, AgentScope.assets_update, "assets.create"
+        )
+        self._validate_asset_category(household_id, request)
+        actor = Actor(type=ActorType.agent, id=str(principal.connection_id))
+        observed_at = request.observed_at.isoformat().replace("+00:00", "Z")
+        account_payload = {
+            "name": request.name,
+            "kind": request.kind.value,
+            "assetGroup": request.asset_group.value if request.asset_group else None,
+            "category": request.category_id,
+            "moneyBucket": request.money_bucket.value if request.money_bucket else None,
+            "amountInFen": request.amount_in_fen,
+            "createdAt": observed_at,
+            "archivedAt": None,
+            "balanceObservedAt": observed_at,
+        }
+        snapshot_payload = {
+            "accountId": str(request.account_id),
+            "memberProfileId": request.member_profile_id,
+            "amountInFen": request.amount_in_fen,
+            "observedAt": observed_at,
+        }
+        after = {
+            "entityType": "assetAccount",
+            "entityId": str(request.account_id),
+            "revision": 1,
+            "name": request.name,
+            "kind": request.kind.value,
+            "assetGroup": request.asset_group.value if request.asset_group else None,
+            "category": request.category_id,
+            "moneyBucket": request.money_bucket.value if request.money_bucket else None,
+            "amountInFen": request.amount_in_fen,
+            "initialSnapshotId": str(request.snapshot_id),
+            "observedAt": observed_at,
+        }
+        now = datetime.now(UTC)
+        account, replayed = self._storage.create_agent_entity(
+            household_id,
+            actor,
+            "assetAccount",
+            str(request.account_id),
+            str(request.idempotency_key),
+            AgentScope.assets_update.value,
+            "assets.create",
+            principal.integration.value,
+            account_payload,
+            {"before": None, "after": after},
+            now,
+            related_creates=[{
+                "entityType": "assetSnapshot",
+                "entityId": str(request.snapshot_id),
+                "payload": snapshot_payload,
+            }],
+        )
+        snapshot = self._storage.read_household_document(
+            household_id, str(request.snapshot_id)
+        )
+        if snapshot is None or snapshot.get("entityType") != "assetSnapshot":
+            raise RuntimeError("Stored initial asset snapshot is missing")
+        self._notify_changes(household_id)
+        return AgentAssetCreateResponse(
+            account=self._agent_entity_view(account),
+            initial_snapshot=self._agent_entity_view(snapshot),
+            replayed=replayed,
+        )
+
+    def agent_create_asset_batch(
+        self,
+        principal: AgentPrincipal,
+        request: AgentAssetBatchCreate,
+    ) -> AgentAssetBatchCreateResponse:
+        household_id = str(principal.household_id)
+        self._require_active_household(household_id)
+        self._require_agent_scope(
+            principal, AgentScope.assets_update, "assets.create.batch"
+        )
+        for account in request.accounts:
+            self._validate_asset_category(household_id, account)
+        results = [self.agent_create_asset(principal, account) for account in request.accounts]
+        replayed_count = sum(result.replayed for result in results)
+        return AgentAssetBatchCreateResponse(
+            results=results,
+            created_count=len(results) - replayed_count,
+            replayed_count=replayed_count,
+        )
+
+    def _validate_asset_category(
+        self,
+        household_id: str,
+        request: AgentAssetCreate,
+    ) -> None:
+        category = self._storage.read_household_document(
+            household_id, request.category_id
+        )
+        payload = (category or {}).get("payload") or category or {}
+        expected_group = (
+            "liability"
+            if request.kind.value == "liability"
+            else request.asset_group.value
+        )
+        if (
+            category is None
+            or category.get("entityType") != "category"
+            or category.get("deletedAt") is not None
+            or payload.get("scope") != "asset"
+            or payload.get("assetGroup") != expected_group
+            or payload.get("isArchived") is True
+        ):
+            raise ValueError("Asset category not found or incompatible with account classification")
 
     @staticmethod
     def _should_materialize_asset_balance(before: dict, observed_at: datetime) -> bool:
