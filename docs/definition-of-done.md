@@ -160,5 +160,7 @@ Change Feed behavior, or Production readiness.
       categories and does not turn `assets_update` into implicit creation.
 - [x] HTTP, MCP, in-memory, and Cosmos transaction tests cover create, replay,
       batch counts, pull visibility, redacted audit, and consecutive change order.
-- [ ] Development deployment and authenticated remote HTTP/MCP creation are
-      recorded separately before this capability is described as deployed.
+- [x] Development deployment, public route publication, and unauthenticated HTTP/MCP
+      rejection are recorded separately.
+- [ ] Authenticated remote HTTP/MCP creation and replay are recorded separately
+      before end-to-end Development behavior is claimed.
