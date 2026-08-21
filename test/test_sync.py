@@ -47,6 +47,12 @@ def ledger_payload(amount=8800):
     }
 
 
+def other_expense_payload(amount=8800):
+    payload = ledger_payload(amount)
+    payload["channelId"] = None
+    return payload
+
+
 def mutation(device_id, sequence=1, **overrides):
     values = {
         "mutation_id": uuid4(),
@@ -155,6 +161,30 @@ class CloudSyncTest(unittest.TestCase):
         listed = self.service.audit(self.identity, None, 10)
         self.assertEqual(listed.events[0].operation_id, str(item.mutation_id))
         self.assertEqual(listed.events[0].actor_id, self.identity.uid)
+
+    def test_push_accepts_other_expense_without_channel(self):
+        self.activate_empty_workspace()
+        item = mutation(self.device_id, payload=other_expense_payload())
+
+        result = self.service.push(
+            self.identity,
+            SyncPushRequest(device_id=self.device_id, mutations=[item]),
+        )
+
+        self.assertEqual(result.results[0].status, MutationStatus.accepted)
+        page = self.service.pull(self.identity, None, 10)
+        self.assertIsNone(page.changes[0].payload["channelId"])
+
+    def test_push_rejects_empty_channel_when_supplied(self):
+        self.activate_empty_workspace()
+        item = mutation(self.device_id, payload=ledger_payload())
+        item.payload["channelId"] = ""
+
+        with self.assertRaises(ValueError):
+            self.service.push(
+                self.identity,
+                SyncPushRequest(device_id=self.device_id, mutations=[item]),
+            )
 
     def test_stale_revision_conflicts_and_soft_delete_propagates(self):
         self.activate_empty_workspace()

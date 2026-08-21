@@ -79,8 +79,8 @@ class LedgerEntryCreate(DocumentModel):
 
     @model_validator(mode="after")
     def channel_matches_direction(self) -> "LedgerEntryCreate":
-        if self.direction is LedgerDirection.expense and not self.channel_id:
-            raise ValueError("Expense ledger entries require channelId")
+        if self.channel_id is not None and not self.channel_id:
+            raise ValueError("channelId must be non-empty when supplied")
         if self.direction is LedgerDirection.income and self.channel_id is not None:
             raise ValueError("Income ledger entries cannot have channelId")
         return self

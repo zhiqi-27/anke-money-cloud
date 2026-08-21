@@ -75,9 +75,27 @@ class LedgerDocumentModelTest(unittest.TestCase):
                 channel_id="channel:bank",
             )
 
-    def test_expense_requires_payment_channel(self):
+    def test_expense_without_payment_channel_represents_other(self):
+        request = make_request(channel_id=None)
+        self.assertIsNone(request.channel_id)
+
+    def test_agent_expense_without_payment_channel_represents_other(self):
+        request = AgentLedgerEntryCreate(
+            id=uuid4(),
+            idempotency_key=uuid4(),
+            kind="transaction",
+            direction="expense",
+            occurred_at=datetime(2026, 8, 1, tzinfo=UTC),
+            month_start=date(2026, 8, 1),
+            channel_id=None,
+            category_id="category:grocery",
+            amount_in_fen=100,
+        )
+        self.assertIsNone(request.channel_id)
+
+    def test_rejects_empty_payment_channel_when_supplied(self):
         with self.assertRaises(ValidationError):
-            make_request(channel_id=None)
+            make_request(channel_id="")
 
     def test_rejects_floating_point_money(self):
         for value in (123.0, 123.45):

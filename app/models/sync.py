@@ -115,8 +115,9 @@ def _validate_entity_payload(
         if amount <= 0:
             raise ValueError("Ledger amountInFen must be positive")
         channel = payload.get("channelId")
-        if direction == "expense" and (not isinstance(channel, str) or not channel):
-            raise ValueError("Expense ledger entries require channelId")
+        _validate_optional_string(payload, "channelId")
+        if isinstance(channel, str) and not channel.strip():
+            raise ValueError("channelId must be non-empty when supplied")
         if direction == "income" and channel is not None:
             raise ValueError("Income ledger entries cannot have channelId")
         _validate_optional_string(payload, "note")

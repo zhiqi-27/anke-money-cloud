@@ -52,7 +52,8 @@ records; client clocks never determine acceptance order.
 - `occurredAt`: exact UTC instant for a single transaction; normalized period
   anchor for a monthly record
 - `monthStart`: canonical first day of the selected calendar month
-- `channelId`: required for expense; absent for income
+- `channelId`: optional for expense (`null` represents the product's “其他”
+  channel); absent for income
 - `categoryId`: stable reference identifier
 - `amountInFen`: positive signed 64-bit integer; currency is never floating point
 - `allocationSourceId`, `allocationIndex`, `allocationCount`, and

@@ -355,3 +355,17 @@ already granted `ledger:create` scope. Internal redacted audit remains mandatory
 but no App import-history, batch-undo, or audit UI is required. Rollback removes
 the batch route/tool and date-page arguments while retaining every entry and audit
 event already accepted through the ordinary ledger contract.
+
+## Approved amendment · 2026-08-21 · Expense entries without a specific channel
+
+An expense ledger entry may omit `channelId` (`null`) when the owner selects the
+product's “其他” channel. A concrete payment channel remains optional product
+metadata rather than a condition for recording an expense; income entries still
+must omit `channelId`. This aligns the sync and Agent validation contract with the
+iOS replica, which has always represented “其他” as a missing local channel ID.
+
+This is a backward-compatible validation and documentation change. It adds no
+scope, authority, partition, or Cosmos schema migration, and existing concrete
+channel entries remain unchanged. Rollback must retain read and write acceptance
+for already synchronized “其他” entries or first ship a client migration that
+replaces their missing channel representation.
