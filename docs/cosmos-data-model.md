@@ -55,7 +55,9 @@ records; client clocks never determine acceptance order.
 - `channelId`: optional for expense (`null` represents the product's “其他”
   channel); absent for income
 - `categoryId`: stable reference identifier
-- `amountInFen`: positive signed 64-bit integer; currency is never floating point
+- `amountMinor`: positive signed 64-bit integer in `currencyCode`; currency is never floating point
+- `currencyCode`: one of the 30 product-approved ISO 4217 fiat currencies
+- legacy `amountInFen` without `amountMinor` is interpreted as CNY
 - `allocationSourceId`, `allocationIndex`, `allocationCount`, and
   `allocationStartMonth`: optional all-or-none metadata for a read-only monthly
   allocation derived from an original transaction expense. The original entry
@@ -94,6 +96,14 @@ as later snapshot appends; previously issued full-capability keys need no rewrit
 An owner-managed reference record for a person a ledger entry or asset snapshot may
 concern. It has no Apple credential, login session, role, invitation, grant, or collaboration
 authority. Agent Cloud 1.0 still has one authenticating owner.
+
+### `financialSpaceSettings`
+
+The one singleton settings document stores `accountingCurrencyCode`,
+`monthlyBudgetMinor`, and positive `expenseCategoryBudgets` minor-unit values.
+It synchronizes through the owner app but is not exposed as an Agent management
+capability. Its accounting currency supplies the default currency for confirmed
+Agent writes.
 
 ### `operation`
 

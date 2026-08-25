@@ -52,7 +52,10 @@ resets or revokes it.
 - `assets_create_batch` creates 1 through 25 independently idempotent account and
   initial-snapshot pairs. It does not update existing accounts or create rollback history.
 - `assets_update` changes exactly one account by appending one dated snapshot.
-- Keep money in integer fen. Reject floating-point currency values.
+- Keep money as an integer minor-unit amount in the workspace accounting
+  currency. The current tool argument is still named `amount_in_fen` for backward
+  compatibility; outside CNY it means that currency's ISO minor unit. Reject
+  floating-point currency values and never perform a second currency conversion.
 - Do not put credentials, access tokens, private notes, or unrelated record
   payloads into prompts, summaries, or logs.
 - If the API Key is invalid or revoked, stop and ask the user to create or reset it

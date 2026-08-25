@@ -61,6 +61,7 @@ class LedgerEntryCreate(DocumentModel):
     channel_id: str | None = Field(default=None, max_length=128)
     category_id: str = Field(min_length=1, max_length=128)
     amount_in_fen: StrictInt = Field(gt=0, le=9_000_000_000_000_000)
+    currency_code: str = Field(default="CNY", pattern="^[A-Z]{3}$")
     note: str | None = Field(default=None, max_length=500)
 
     @field_validator("occurred_at")
@@ -109,6 +110,8 @@ class LedgerEntryDocument(HouseholdDocument):
     channel_id: str | None = None
     category_id: str
     amount_in_fen: int
+    amount_minor: int
+    currency_code: str
     note: str | None = None
 
 
@@ -163,6 +166,8 @@ def build_ledger_transaction_documents(
             "channelId": request.channel_id,
             "categoryId": request.category_id,
             "amountInFen": request.amount_in_fen,
+            "amountMinor": request.amount_in_fen,
+            "currencyCode": request.currency_code,
         },
     }
     request_hash = canonical_write_hash(
@@ -201,6 +206,8 @@ def build_ledger_transaction_documents(
         channel_id=request.channel_id,
         category_id=request.category_id,
         amount_in_fen=request.amount_in_fen,
+        amount_minor=request.amount_in_fen,
+        currency_code=request.currency_code,
         note=request.note,
         **common,
     )

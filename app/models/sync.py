@@ -26,6 +26,7 @@ class SyncEntityType(str, Enum):
     payment_channel = "paymentChannel"
     category = "category"
     member_profile = "memberProfile"
+    financial_space_settings = "financialSpaceSettings"
 
 
 class MutationAction(str, Enum):
@@ -46,6 +47,31 @@ def _require_integer(payload: dict[str, Any], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{key} must be an integer")
     return value
+
+
+SUPPORTED_FIAT_CURRENCIES = {
+    "CNY", "USD", "EUR", "GBP", "JPY", "HKD", "TWD", "KRW", "MOP", "SGD",
+    "CAD", "AUD", "NZD", "CHF", "MXN", "BRL", "ARS", "CLP", "COP", "PEN",
+    "INR", "IDR", "THB", "MYR", "PHP", "VND", "SEK", "NOK", "DKK", "AED",
+}
+
+
+def _validate_money(payload: dict[str, Any], *, positive: bool) -> int:
+    if "amountMinor" in payload:
+        amount = _require_integer(payload, "amountMinor")
+        currency = _require_string(payload, "currencyCode").upper()
+        if currency not in SUPPORTED_FIAT_CURRENCIES:
+            raise ValueError("currencyCode is not supported")
+        if "amountInFen" in payload and _require_integer(payload, "amountInFen") != amount:
+            raise ValueError("Legacy amountInFen must equal amountMinor")
+    else:
+        amount = _require_integer(payload, "amountInFen")
+        currency = payload.get("currencyCode", "CNY")
+        if currency != "CNY":
+            raise ValueError("Legacy amountInFen without amountMinor must use CNY")
+    if positive and amount <= 0:
+        raise ValueError("Ledger amountMinor must be positive")
+    return amount
 
 
 def _require_boolean(payload: dict[str, Any], key: str) -> None:
@@ -111,9 +137,7 @@ def _validate_entity_payload(
         if parsed_month.day != 1:
             raise ValueError("monthStart must be the first day of a month")
         _require_string(payload, "categoryId")
-        amount = _require_integer(payload, "amountInFen")
-        if amount <= 0:
-            raise ValueError("Ledger amountInFen must be positive")
+        _validate_money(payload, positive=True)
         channel = payload.get("channelId")
         _validate_optional_string(payload, "channelId")
         if isinstance(channel, str) and not channel.strip():
@@ -153,14 +177,14 @@ def _validate_entity_payload(
                 raise ValueError("allocationStartMonth must be the first day of a month")
     elif entity_type is SyncEntityType.asset_account:
         _require_string(payload, "name")
-        _require_integer(payload, "amountInFen")
+        _validate_money(payload, positive=False)
         _validate_optional_asset_image(payload)
     elif entity_type is SyncEntityType.asset_snapshot:
         try:
             UUID(_require_string(payload, "accountId"))
         except ValueError as error:
             raise ValueError("accountId must be a UUID") from error
-        _require_integer(payload, "amountInFen")
+        _validate_money(payload, positive=False)
         _require_timezone_timestamp(payload, "observedAt")
         _validate_optional_string(payload, "memberProfileId")
     elif entity_type is SyncEntityType.payment_channel:
@@ -187,6 +211,20 @@ def _validate_entity_payload(
             raise ValueError("Category scope is invalid")
     elif entity_type is SyncEntityType.member_profile:
         _require_string(payload, "name")
+    elif entity_type is SyncEntityType.financial_space_settings:
+        currency = _require_string(payload, "accountingCurrencyCode").upper()
+        if currency not in SUPPORTED_FIAT_CURRENCIES:
+            raise ValueError("accountingCurrencyCode is not supported")
+        if _require_integer(payload, "monthlyBudgetMinor") < 0:
+            raise ValueError("monthlyBudgetMinor must not be negative")
+        budgets = payload.get("expenseCategoryBudgets")
+        if not isinstance(budgets, dict):
+            raise ValueError("expenseCategoryBudgets must be an object")
+        for category_id, amount in budgets.items():
+            if not isinstance(category_id, str) or not category_id.strip():
+                raise ValueError("Budget category IDs must be non-empty strings")
+            if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+                raise ValueError("Category budgets must be positive integers")
 
 
 class DeviceRegistration(APIModel):
@@ -240,6 +278,11 @@ class SyncMutation(APIModel):
             raise ValueError("Update and delete mutations require baseRevision")
         if self.action is MutationAction.delete and self.payload not in (None, {}):
             raise ValueError("Delete mutations cannot include payload")
+        if (
+            self.entity_type is SyncEntityType.financial_space_settings
+            and self.action is MutationAction.delete
+        ):
+            raise ValueError("Financial space settings cannot be deleted")
         if self.action is not MutationAction.delete and not self.payload:
             raise ValueError("Create and update mutations require payload")
         if self.payload:

@@ -39,6 +39,7 @@ from app.models import (
 )
 from app.storage.protocols import HouseholdStorage
 from app.services.agent_access import AgentAccessService
+from app.models.sync import SUPPORTED_FIAT_CURRENCIES
 
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ class CloudService:
             **request.model_dump(),
             household_id=principal.household_id,
             source=principal.integration,
+            currency_code=self._accounting_currency(str(principal.household_id)),
         )
         result = self._storage.create_ledger_entry(
             storage_request,
@@ -165,6 +167,7 @@ class CloudService:
                 **entry.model_dump(),
                 household_id=principal.household_id,
                 source=principal.integration,
+                currency_code=self._accounting_currency(str(principal.household_id)),
             )
             result = self._storage.create_ledger_entry(storage_request, actor)
             results.append(
@@ -268,12 +271,15 @@ class CloudService:
         ):
             raise ValueError("Asset account not found")
         actor = Actor(type=ActorType.agent, id=str(principal.connection_id))
+        currency_code = self._accounting_currency(str(principal.household_id))
         payload = request.model_dump(
             by_alias=True,
             mode="json",
             exclude={"snapshot_id", "idempotency_key"},
         )
         payload["accountId"] = str(account_id)
+        payload["amountMinor"] = request.amount_in_fen
+        payload["currencyCode"] = currency_code
         before = self._asset_balance_before(str(principal.household_id), account)
         after = {
             "entityType": "assetSnapshot",
@@ -281,6 +287,8 @@ class CloudService:
             "revision": 1,
             "accountId": str(account_id),
             "amountInFen": request.amount_in_fen,
+            "amountMinor": request.amount_in_fen,
+            "currencyCode": currency_code,
             "observedAt": request.observed_at.isoformat().replace("+00:00", "Z"),
             "memberProfileId": request.member_profile_id,
         }
@@ -290,6 +298,8 @@ class CloudService:
             related_update = dict(account)
             related_payload = dict(account.get("payload") or account)
             related_payload["amountInFen"] = request.amount_in_fen
+            related_payload["amountMinor"] = request.amount_in_fen
+            related_payload["currencyCode"] = currency_code
             related_payload["balanceObservedAt"] = request.observed_at.isoformat().replace(
                 "+00:00", "Z"
             )
@@ -330,6 +340,7 @@ class CloudService:
             principal, AgentScope.assets_update, "assets.create"
         )
         self._validate_asset_category(household_id, request)
+        currency_code = self._accounting_currency(household_id)
         actor = Actor(type=ActorType.agent, id=str(principal.connection_id))
         observed_at = request.observed_at.isoformat().replace("+00:00", "Z")
         account_payload = {
@@ -339,6 +350,8 @@ class CloudService:
             "category": request.category_id,
             "moneyBucket": request.money_bucket.value if request.money_bucket else None,
             "amountInFen": request.amount_in_fen,
+            "amountMinor": request.amount_in_fen,
+            "currencyCode": currency_code,
             "createdAt": observed_at,
             "archivedAt": None,
             "balanceObservedAt": observed_at,
@@ -347,6 +360,8 @@ class CloudService:
             "accountId": str(request.account_id),
             "memberProfileId": request.member_profile_id,
             "amountInFen": request.amount_in_fen,
+            "amountMinor": request.amount_in_fen,
+            "currencyCode": currency_code,
             "observedAt": observed_at,
         }
         after = {
@@ -359,6 +374,8 @@ class CloudService:
             "category": request.category_id,
             "moneyBucket": request.money_bucket.value if request.money_bucket else None,
             "amountInFen": request.amount_in_fen,
+            "amountMinor": request.amount_in_fen,
+            "currencyCode": currency_code,
             "initialSnapshotId": str(request.snapshot_id),
             "observedAt": observed_at,
         }
@@ -588,6 +605,15 @@ class CloudService:
                 "Agent Cloud workspace must complete migration activation before normal writes"
             )
 
+    def _accounting_currency(self, household_id: str) -> str:
+        settings = self._storage.read_household_document(
+            household_id,
+            "5a59e59a-dde4-4555-86f6-188ff576bb03",
+        )
+        payload = (settings or {}).get("payload") or settings or {}
+        currency = payload.get("accountingCurrencyCode", "CNY")
+        return currency if currency in SUPPORTED_FIAT_CURRENCIES else "CNY"
+
     def _agent_list(
         self,
         principal: AgentPrincipal,
@@ -664,11 +690,11 @@ class CloudService:
             fields = {
                 "ledgerEntry": (
                     "kind", "direction", "occurredAt", "monthStart", "channelId",
-                    "categoryId", "amountInFen", "note", "memberProfileId",
+                    "categoryId", "amountInFen", "amountMinor", "currencyCode", "note", "memberProfileId",
                 ),
-                "assetAccount": ("name", "amountInFen"),
+                "assetAccount": ("name", "amountInFen", "amountMinor", "currencyCode"),
                 "assetSnapshot": (
-                    "accountId", "memberProfileId", "amountInFen", "observedAt",
+                    "accountId", "memberProfileId", "amountInFen", "amountMinor", "currencyCode", "observedAt",
                 ),
                 "paymentChannel": (
                     "name", "symbolName", "assetName", "sortOrder", "isArchived", "isSystem",

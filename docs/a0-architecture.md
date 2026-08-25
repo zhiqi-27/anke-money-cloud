@@ -369,3 +369,18 @@ scope, authority, partition, or Cosmos schema migration, and existing concrete
 channel entries remain unchanged. Rollback must retain read and write acceptance
 for already synchronized “其他” entries or first ship a client migration that
 replaces their missing channel representation.
+
+## Approved amendment · 2026-08-24 · Accounting currency and ISO minor units
+
+Each household remains one financial space and has one synchronized
+`financialSpaceSettings` document containing its accounting currency and budgets.
+Ledger entries, asset accounts, and asset snapshots store an integer `amountMinor`
+plus one of the 30 product-approved ISO 4217 `currencyCode` values. Existing
+`amountInFen` payloads remain readable as CNY during the compatibility window, and
+new clients may include the same integer in both fields for old-server rollback.
+
+The service never stores floating-point money and does not rewrite historical
+record currencies. Changing accounting currency is a settings mutation; clients
+convert aggregate presentation with cached rates and convert budgets once. Agent
+writes use the household accounting currency. Rollback keeps the additive fields
+and treats missing currency as CNY; no container or partition change is required.

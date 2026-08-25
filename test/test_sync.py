@@ -475,6 +475,61 @@ class CloudSyncTest(unittest.TestCase):
                 created_at=datetime.now(UTC),
             )
 
+    def test_money_payload_accepts_supported_minor_units_and_legacy_cny(self):
+        usd = mutation(
+            self.device_id,
+            payload={
+                **ledger_payload(),
+                "amountInFen": 1299,
+                "amountMinor": 1299,
+                "currencyCode": "USD",
+            },
+        )
+        self.assertEqual(usd.payload["currencyCode"], "USD")
+        self.assertEqual(mutation(self.device_id).payload["amountInFen"], 8800)
+
+        for payload in (
+            {**ledger_payload(), "amountMinor": 100, "currencyCode": "BTC"},
+            {**ledger_payload(), "amountMinor": 100, "currencyCode": "USD"},
+            {**ledger_payload(), "currencyCode": "USD"},
+        ):
+            if "amountMinor" in payload and payload.get("amountInFen") == payload["amountMinor"]:
+                continue
+            with self.assertRaises(ValidationError):
+                mutation(self.device_id, payload=payload)
+
+    def test_financial_space_settings_supports_one_accounting_currency(self):
+        item = mutation(
+            self.device_id,
+            entity_type=SyncEntityType.financial_space_settings,
+            entity_id="5a59e59a-dde4-4555-86f6-188ff576bb03",
+            payload={
+                "accountingCurrencyCode": "CNY",
+                "monthlyBudgetMinor": 500_000,
+                "expenseCategoryBudgets": {"dining": 80_000},
+            },
+        )
+        self.assertEqual(item.payload["accountingCurrencyCode"], "CNY")
+        with self.assertRaises(ValidationError):
+            mutation(
+                self.device_id,
+                entity_type=SyncEntityType.financial_space_settings,
+                payload={
+                    "accountingCurrencyCode": "BTC",
+                    "monthlyBudgetMinor": 0,
+                    "expenseCategoryBudgets": {},
+                },
+            )
+        with self.assertRaises(ValidationError):
+            mutation(
+                self.device_id,
+                entity_type=SyncEntityType.financial_space_settings,
+                entity_id="5a59e59a-dde4-4555-86f6-188ff576bb03",
+                action=MutationAction.delete,
+                base_revision=1,
+                payload=None,
+            )
+
     def test_asset_categories_share_the_category_contract_with_an_asset_scope(self):
         payload = {
             "name": "存款",

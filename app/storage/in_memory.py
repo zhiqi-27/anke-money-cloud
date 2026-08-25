@@ -1012,7 +1012,7 @@ class InMemoryHouseholdStorage:
             "changeSummary": {
                 "fields": sorted(
                     key for key in (mutation.payload or {}).keys()
-                    if key not in {"note", "amountInFen"}
+                    if key not in {"note", "amountInFen", "amountMinor"}
                 )
             },
             "createdAt": now,

@@ -27,10 +27,12 @@ Required scope: `ledger:create`.
 
 Append exactly one entry. Required arguments are `id`, `idempotency_key`,
 `kind`, `direction`, `occurred_at`, `month_start`, `category_id`, and
-`amount_in_fen`. `channel_id` is required for an expense and absent for income.
+`amount_in_fen`. The legacy argument name always carries an integer amount in the
+workspace accounting currency's ISO minor unit; the service records that currency
+automatically. `channel_id` is required for an expense and absent for income.
 `note` is optional. UUIDs must be new for a new entry. Timestamps include a time
-zone, `month_start` is the first calendar day, and the amount is positive integer
-fen.
+zone, `month_start` is the first calendar day, and the amount is a positive integer
+minor-unit value.
 
 ## `ledger_create_batch`
 
@@ -49,7 +51,8 @@ Required scope: `assets:update`.
 
 Append one dated snapshot to exactly one existing asset account. Required
 arguments are `account_id`, `snapshot_id`, `idempotency_key`, `amount_in_fen`,
-and timezone-aware `observed_at`. `member_profile_id` is optional. Resolve the
+and timezone-aware `observed_at`. The amount uses the workspace accounting
+currency's integer minor unit. `member_profile_id` is optional. Resolve the
 account with `assets_read`; never guess it. A separate confirmed update needs a
 new snapshot ID and idempotency key.
 
@@ -66,7 +69,8 @@ arguments are `account_id`, `snapshot_id`, `idempotency_key`, `name`, `kind`,
 `kind` is `asset` or `liability`. Assets require `asset_group` from `financial`,
 `living`, `interest`, or `receivable`; liabilities omit it. Financial assets also
 require `money_bucket` from `flexible`, `stable`, or `risk`; every other account
-omits it. `member_profile_id` is optional. Amounts are non-negative integer fen.
+omits it. `member_profile_id` is optional. Amounts are non-negative integer
+minor-unit values in the workspace accounting currency.
 The category must be active and have the same asset group, or liability scope, as
 the proposed account.
 

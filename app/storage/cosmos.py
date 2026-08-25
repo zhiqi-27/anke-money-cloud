@@ -1502,7 +1502,7 @@ class CosmosHouseholdStorage:
             "operationId": str(mutation.mutation_id),
             "outcome": result.status.value,
             "reason": result.reason,
-            "changeSummary": {"fields": sorted(key for key in (mutation.payload or {}) if key not in {"note", "amountInFen"})},
+            "changeSummary": {"fields": sorted(key for key in (mutation.payload or {}) if key not in {"note", "amountInFen", "amountMinor"})},
             "createdAt": now,
         }
         return operation, audit

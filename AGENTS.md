@@ -27,7 +27,8 @@ product decision, amend the iOS decision first; do not silently redefine it here
   are server-owned authorization decisions.
 - Clients and MCP tools never connect directly to Cosmos DB.
 - The primary Cosmos container uses `/householdId` as its partition key.
-- Money is integer fen. Floating-point currency is prohibited.
+- Money is an integer ISO minor-unit amount with an approved fiat currency code.
+  Legacy `amountInFen` data is CNY; floating-point currency is prohibited.
 - Remote ledger creation is append-only and idempotent by `operationId`.
 - A ledger write, idempotency record, and audit event must share one transactional
   batch in the same container and household partition.

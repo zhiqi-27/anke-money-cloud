@@ -118,6 +118,48 @@ class AgentAccessTest(unittest.TestCase):
                 principal, request.model_copy(update={"amount_in_fen": 9_900})
             )
 
+    def test_agent_writes_use_the_workspace_accounting_currency(self):
+        settings_id = "5a59e59a-dde4-4555-86f6-188ff576bb03"
+        self.cloud.push(
+            self.identity,
+            SyncPushRequest(
+                device_id=self.bootstrap.device_id,
+                mutations=[SyncMutation(
+                    mutation_id=uuid4(),
+                    device_id=self.bootstrap.device_id,
+                    sequence=1,
+                    entity_type=SyncEntityType.financial_space_settings,
+                    entity_id=settings_id,
+                    action=MutationAction.create,
+                    payload={
+                        "accountingCurrencyCode": "USD",
+                        "monthlyBudgetMinor": 0,
+                        "expenseCategoryBudgets": {},
+                    },
+                    occurred_at=datetime.now(UTC),
+                )],
+            ),
+        )
+        created = self.cloud.create_agent_api_key(self.identity, self.access)
+        principal = self.access.authenticate(created.api_key)
+        request = AgentLedgerEntryCreate(
+            id=uuid4(),
+            idempotency_key=uuid4(),
+            kind="transaction",
+            direction="expense",
+            occurred_at=datetime(2026, 8, 5, tzinfo=UTC),
+            month_start=date(2026, 8, 1),
+            channel_id="cash",
+            category_id="grocery",
+            amount_in_fen=1299,
+        )
+
+        response = self.cloud.agent_create_ledger_entry(principal, request)
+
+        self.assertEqual(response.entry.amount_minor, 1299)
+        self.assertEqual(response.entry.currency_code, "USD")
+        self.assertEqual(response.entry.amount_in_fen, 1299)
+
     def test_confirmed_batch_replays_and_date_pages_without_duplicates(self):
         created = self.cloud.create_agent_api_key(self.identity, self.access)
         principal = self.access.authenticate(created.api_key)
