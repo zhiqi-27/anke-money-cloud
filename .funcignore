@@ -1,0 +1,14 @@
+.git/
+.github/
+.azure/
+.venv/
+__pycache__/
+*.pyc
+test/
+docs/
+infra/
+local.settings.json
+firebase-adminsdk*.json
+.env
+.env.*
+*.p8

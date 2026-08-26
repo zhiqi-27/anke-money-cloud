@@ -44,27 +44,32 @@ Clerk-backed Anke session contract; they do not validate the current implementat
 | 2026-08-18 | Development synchronization and Agent data-transfer deployment | Remote-build ZIP from code commit `964e280` deployed through Azure Cloud Shell to `anke-money-dev/func-anke-money-dev-zq01`; package SHA-256 `59f67c7f60fdc763873547fb2d683337289f7103949bee0bb696ccbe8ec763f5`; trigger discovery, public HTTP boundary, OpenAPI contract, Change Feed prerequisites, protected APNs configuration, and GitHub CI | Passed; deployment `8de38016-6ec1-426b-964d-83b8526df6b7` registered `http_app_func`, `enforce_data_retention`, and `notify_devices_of_cloud_changes`; `/ping` returned 200 with `environment=dev`; OpenAPI exposed paginated ledger/assets reads and `/agent/v1/ledger/entries/batch`; unauthenticated batch and `/mcp` calls returned 401; the `anke_sync_leases` container exists; all Change Feed settings are non-empty; APNs team, key, and private-key settings are Key Vault references; backend CI passed; no API Key, financial data, synthetic cloud write, APNs request, Simulator, or physical-device run was used |
 | 2026-08-21 | Local Agent asset-account creation | Single and 1–25 batch account creation; atomic account plus initial snapshot, operation, audit, and change-sequence writes; category/classification validation; HTTP and nine-tool MCP create/replay; App pull ordering; API Key compatibility; model, in-memory, Cosmos adapter, OpenAPI, compile, Skill validation, and diff checks | Passed; 97 credential-free tests, 0 failures; backend and public `anke-money-agent` packages passed `quick_validate.py`; no deployment, API Key, real financial data, Simulator, or physical-device run was used |
 | 2026-08-21 | Development Agent asset-account creation deployment | Committed code `e7fb6babd1706c248b83e897af331ffdd45eb800` packaged as a 31-file Python remote-build One Deploy to `anke-money-dev/func-anke-money-dev-zq01`; package SHA-256 `939ecc75730c1fdada9f5ad6f770133341a096de35e3cbcee50764f5a1cd10ef`; public health, OpenAPI contract, and protected boundary checks | Passed; deployment `69d5f251-a2b9-4228-ace8-3dc72e46d84a` finished with Azure status `4`; `/ping` returned 200 with `environment=dev`; OpenAPI exposed `POST /agent/v1/assets` and `POST /agent/v1/assets/batch`; unauthenticated single create, batch create, and `/mcp` returned 401; no API Key, financial data, authenticated write, Simulator, physical device, or Production environment was used |
+| 2026-08-25 | Production Azure deployment and synthetic acceptance | Independent `anke-money-prod` Function, Cosmos, Key Vault, Storage, managed identity, Application Insights, Log Analytics, and alert resources; Production Clerk proxy authentication; two temporary Clerk identities; authenticated bootstrap/migration, cross-household denial, exact mutation/delete replay, tombstone pull, account deletion retry, and cleanup; Continuous 7-day backup plus isolated point-in-time restore | Passed; `/ping` reported `environment=prod`; unauthenticated protected route returned 401; all synthetic users and restored verification resources were removed; Cosmos local authentication is disabled; alert and email action group are enabled |
+| 2026-08-26 | Production iOS final candidate and physical-device APNs | Apple Distribution Archive `0.1.0 (3)`, formal Distribution profile, signed Production entitlement, App Store Connect processing/compliance/internal-group readback, TestFlight installation, Production token registration, Key Vault provider-key match, data-free background push, and Application Insights correlation | Passed; Archive verifier reports `aps-environment=production`; physical device reports installed build 3; Production APNs returned HTTP 200 and an APNs ID at `02:55:18.884213Z`; with Anke Money backgrounded, the device issued authenticated Production `POST /api/v1/sync/pull` at `02:55:20.5360111Z`, HTTP 200, 1.65 seconds later |
 
 ## Remaining evidence boundaries
 
-- Clerk provider flows, a Clerk-issued credential against the current deployed Anke
-  endpoint, and physical-device behavior remain unverified. Historical synthetic
-  Firebase smoke is not evidence for them.
-- Production deployment, secrets, schema promotion, and production data were not
-  accessed or changed.
+- Production Clerk email-code sign-up/sign-in, a Clerk-issued credential against
+  the deployed Production endpoint, account-scoped replica attachment, and
+  physical-device background APNs are verified. Apple and Google social providers
+  are intentionally disabled for the first Production release until their own
+  Production credentials and native redirect acceptance are completed.
+- Production acceptance did not modify real ledger or asset data. Synthetic cloud
+  identities and the isolated backup-restore account were cleaned up after their
+  scoped checks.
 - The Development A1+A2 E2E proves the deployed synthetic workflow and real Cosmos
   persistence. It does not prove a signed iOS Local migration, source-store
   archival on a device, or a second physical device reconnect.
 - The retention timer is deployed and registered, but its destructive lifecycle
   behavior still has local adapter evidence only; no operational timer invocation
   was forced against shared Development data.
-- Phase 5 account erasure is deployed and has exact synthetic-account evidence in
-  Development. It does not prove Clerk session revocation, signed-iOS orchestration,
-  physical-device deletion, or Production behavior.
-- The 2026-08-18 deployment proves route and trigger registration plus required
-  Development configuration. It does not prove authenticated remote pagination or
-  batch creation, Change Feed delivery, APNs acceptance, or physical-device
-  background execution.
+- Production account erasure has synthetic Clerk/Cosmos evidence for first delete,
+  idempotent retry, post-delete denial, and identity cleanup. Physical-device
+  deletion of a real account remains outside this release acceptance because it
+  would destroy user data.
+- The 2026-08-18 Development deployment alone does not prove authenticated remote
+  pagination or batch creation. Production APNs acceptance and physical-device
+  background execution are now independently verified by the 2026-08-26 evidence.
 - The 2026-08-21 asset-account creation deployment proves route publication and
   authentication boundaries. It does not prove an authenticated remote HTTP or MCP
   create/replay against Development.

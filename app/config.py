@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -74,7 +75,7 @@ class Settings:
             raise ConfigurationError(
                 f"ANKE_ENVIRONMENT must be one of {sorted(ALLOWED_ENVIRONMENTS)}"
             )
-        return cls(
+        settings = cls(
             environment=environment,
             clerk_jwks_url=os.getenv("CLERK_JWKS_URL", "").strip(),
             clerk_issuer=os.getenv("CLERK_ISSUER", "").strip(),
@@ -120,6 +121,9 @@ class Settings:
             ),
             mcp_allowed_origins=_csv("ANKE_MCP_ALLOWED_ORIGINS", ""),
         )
+        if environment == "prod":
+            settings.require_production_boundary()
+        return settings
 
     @property
     def docs_enabled(self) -> bool:
@@ -169,6 +173,53 @@ class Settings:
             and self.apns_private_key
             and self.apns_topic
         )
+
+    def require_production_boundary(self) -> None:
+        """Reject unsafe defaults before a Production app can serve traffic."""
+        self.require_clerk_management()
+        if not self.clerk_secret_key.startswith("sk_live_"):
+            raise ConfigurationError(
+                "CLERK_SECRET_KEY must be a live Production Clerk key"
+            )
+        self.require_session_auth()
+        self.require_cosmos()
+        if self.cosmos_key:
+            raise ConfigurationError(
+                "ANKE_COSMOS_KEY must be empty in Production; use managed identity"
+            )
+        if self.cosmos_allow_smoke_write:
+            raise ConfigurationError(
+                "ANKE_COSMOS_ALLOW_SMOKE_WRITE must be false in Production"
+            )
+        if not self.cosmos_expected_account_name:
+            raise ConfigurationError(
+                "ANKE_COSMOS_EXPECTED_ACCOUNT_NAME is required in Production"
+            )
+        endpoint_host = self.cosmos_endpoint.removeprefix("https://").split("/", 1)[0]
+        if not endpoint_host.startswith(self.cosmos_expected_account_name + "."):
+            raise ConfigurationError(
+                "ANKE_COSMOS_ENDPOINT does not match the expected Production account"
+            )
+        if not self.apns_configured:
+            raise ConfigurationError("Production APNs credentials are required")
+        clerk_values = (self.clerk_issuer, self.clerk_jwks_url)
+        unsafe_clerk_values = tuple(
+            value for value in clerk_values if not self._is_default_clerk_domain(value)
+        )
+        unsafe_values = unsafe_clerk_values + (
+            self.cosmos_endpoint,
+            self.cosmos_database,
+            self.cosmos_expected_account_name,
+        )
+        if any("dev" in value.lower() or "test" in value.lower() for value in unsafe_values):
+            raise ConfigurationError(
+                "Production settings must not contain Development or test identifiers"
+            )
+
+    @staticmethod
+    def _is_default_clerk_domain(value: str) -> bool:
+        host = urlparse(value).hostname or ""
+        return host.endswith(".clerk.accounts.dev")
 
 
 def get_settings() -> Settings:

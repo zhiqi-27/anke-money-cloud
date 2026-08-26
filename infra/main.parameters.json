@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "production"
+    },
+    "location": {
+      "value": "eastasia"
+    },
+    "cosmosDatabaseName": {
+      "value": "anke_money_prod"
+    },
+    "cosmosEntitiesContainerName": {
+      "value": "anke_entities"
+    },
+    "cosmosIdentitiesContainerName": {
+      "value": "anke_identities"
+    },
+    "cosmosLeasesContainerName": {
+      "value": "anke_sync_leases"
+    },
+    "clerkIssuer": {
+      "value": "https://anke-money-website.vercel.app/__clerk"
+    },
+    "clerkJwksUrl": {
+      "value": "https://anke-money-website.vercel.app/__clerk/.well-known/jwks.json"
+    },
+    "clerkAudience": {
+      "value": ""
+    },
+    "alertEmail": {
+      "value": ""
+    },
+    "alertActionGroupId": {
+      "value": "/subscriptions/a1187bf2-2e2f-4e05-aaea-407163a009f5/resourceGroups/anke-money-prod/providers/Microsoft.Insights/actionGroups/azagzepi6zekanwh2"
+    },
+    "mcpAllowedHosts": {
+      "value": ""
+    }
+  }
+}
