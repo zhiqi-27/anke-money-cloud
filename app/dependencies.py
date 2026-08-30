@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from collections import defaultdict, deque
+import time
+from threading import RLock
 
 from fastapi import Depends, HTTPException, Security, status
+from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.auth import (
@@ -21,7 +25,9 @@ from app.services import (
     AuthService,
     InvalidAgentTokenError,
     ClerkManagementClient,
+    AdminService,
 )
+from app.services.billing import AppleBillingService, AppleSignedDataVerifier
 from app.services.push_notifications import APNsPushNotificationService
 from app.models import AgentPrincipal
 from app.storage.cosmos import CosmosHouseholdStorage
@@ -40,6 +46,10 @@ clerk_bearer = HTTPBearer(
     bearerFormat="Clerk session token",
     description="Clerk session token exchanged once for an Anke Cloud session.",
 )
+
+
+_admin_rate_lock = RLock()
+_admin_rate_events: dict[str, deque[float]] = defaultdict(deque)
 
 agent_bearer = HTTPBearer(
     auto_error=False,
@@ -81,10 +91,25 @@ def get_push_notification_service() -> APNsPushNotificationService:
 
 
 def cloud_service() -> CloudService:
+    storage = get_household_storage()
     return CloudService(
-        get_household_storage(),
+        storage,
         change_notifier=get_push_notification_service().notify_household,
+        entitlement_checker=storage.has_active_pro_entitlement,
     )
+
+
+@lru_cache(maxsize=1)
+def get_apple_verifier() -> AppleSignedDataVerifier:
+    return AppleSignedDataVerifier(get_settings())
+
+
+def billing_service() -> AppleBillingService:
+    return AppleBillingService(get_household_storage(), get_apple_verifier())
+
+
+def admin_service() -> AdminService:
+    return AdminService(get_household_storage())
 
 
 def auth_service() -> AuthService:
@@ -105,6 +130,7 @@ def agent_access_service() -> AgentAccessService:
         get_household_storage(),
         requests_per_minute=settings.agent_requests_per_minute,
         failed_auth_threshold=settings.agent_failed_auth_threshold,
+        entitlement_checker=get_household_storage().has_active_pro_entitlement,
     )
 
 
@@ -158,3 +184,56 @@ def current_identity(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Authentication service unavailable",
         ) from exc
+
+
+def current_admin(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Security(clerk_bearer),
+) -> AuthenticatedIdentity:
+    settings = get_settings()
+    if not settings.admin_clerk_subjects:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin service unavailable",
+        )
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing admin authentication",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        identity = get_clerk_verifier().verify_bearer_token(
+            f"{credentials.scheme} {credentials.credentials}"
+        )
+    except InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing admin authentication",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except ConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        ) from exc
+    if identity.provider_subject not in settings.admin_clerk_subjects:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access is not permitted",
+        )
+    key = f"{identity.provider_subject}:{request.client.host if request.client else 'unknown'}"
+    now = time.monotonic()
+    with _admin_rate_lock:
+        events = _admin_rate_events[key]
+        cutoff = now - 60
+        while events and events[0] <= cutoff:
+            events.popleft()
+        if len(events) >= settings.admin_requests_per_minute:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Admin request rate limit exceeded",
+                headers={"Retry-After": "60"},
+            )
+        events.append(now)
+    return identity

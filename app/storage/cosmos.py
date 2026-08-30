@@ -162,6 +162,16 @@ class CosmosHouseholdStorage:
                 or existing.get("providerSubject") not in {None, identity.provider_subject, identity.uid}
             ):
                 raise ValueError("Identity provider subject does not match")
+            changed = False
+            if identity.email and existing.get("email") != identity.email:
+                existing["email"] = identity.email
+                changed = True
+            if identity.display_name and existing.get("displayName") != identity.display_name:
+                existing["displayName"] = identity.display_name
+                changed = True
+            if changed:
+                existing["updatedAt"] = self._now()
+                self._identities_container().upsert_item(body=existing)
             if identity.display_name:
                 self.update_identity_profile(identity, identity.display_name)
             return
@@ -209,10 +219,13 @@ class CosmosHouseholdStorage:
             "entityType": "identityMembership",
             "provider": identity.provider,
             "providerSubject": identity.provider_subject,
+            "email": identity.email,
+            "displayName": identity.display_name,
             "householdId": household_id,
             "userId": user_id,
             "role": "owner",
             "createdAt": now,
+            "updatedAt": now,
         }
         try:
             self._identities_container().create_item(body=membership)
@@ -324,11 +337,266 @@ class CosmosHouseholdStorage:
                 deleted += 1
             except CosmosResourceNotFoundError:
                 continue
+        identities = self._identities_container()
+        identity_records = list(identities.query_items(
+            query=(
+                "SELECT c.id, c.uid FROM c WHERE c.uid = @uid "
+                "AND c.entityType IN ('appleSubscription', 'manualProGrant', 'adminAuditEvent')"
+            ),
+            parameters=[{"name": "@uid", "value": uid}],
+            enable_cross_partition_query=True,
+        )) if hasattr(identities, "query_items") else []
+        for record in identity_records:
+            try:
+                identities.delete_item(
+                    item=record["id"], partition_key=record.get("uid", uid)
+                )
+            except CosmosResourceNotFoundError:
+                pass
         try:
-            self._identities_container().delete_item(item=uid, partition_key=uid)
+            identities.delete_item(item=uid, partition_key=uid)
         except CosmosResourceNotFoundError:
             pass
         return deleted
+
+    def upsert_subscription_entitlement(self, document: dict) -> dict:
+        return self._identities_container().upsert_item(body=document)
+
+    def subscription_entitlement(self, uid: str) -> dict | None:
+        documents = self.subscription_entitlements(uid)
+        if not documents:
+            return None
+        return max(documents, key=lambda value: value.get("updatedAt", ""))
+
+    def subscription_entitlements(self, uid: str) -> list[dict]:
+        return list(self._identities_container().query_items(
+            query=(
+                "SELECT * FROM c WHERE c.entityType = 'appleSubscription' "
+                "AND c.uid = @uid"
+            ),
+            parameters=[{"name": "@uid", "value": uid}],
+            enable_cross_partition_query=True,
+        ))
+
+    def subscription_by_original_transaction_id(
+        self, original_transaction_id: str
+    ) -> dict | None:
+        document_id = f"apple-subscription:{original_transaction_id}"
+        documents = list(self._identities_container().query_items(
+            query=(
+                "SELECT * FROM c WHERE c.entityType = 'appleSubscription' "
+                "AND c.id = @id"
+            ),
+            parameters=[{"name": "@id", "value": document_id}],
+            enable_cross_partition_query=True,
+        ))
+        return documents[0] if documents else None
+
+    def has_active_pro_entitlement(self, household_id: str) -> bool:
+        documents = list(self._identities_container().query_items(
+            query=(
+                "SELECT c.entityType, c.active, c.startsAt, c.expiresAt, c.revokedAt FROM c "
+                "WHERE c.entityType IN ('appleSubscription', 'manualProGrant') "
+                "AND c.householdId = @householdId"
+            ),
+            parameters=[{"name": "@householdId", "value": household_id}],
+            enable_cross_partition_query=True,
+        ))
+        now = datetime.now(UTC)
+        for document in documents:
+            if document.get("entityType") == "manualProGrant":
+                if document.get("revokedAt"):
+                    continue
+                starts_at = self._parse_timestamp(document.get("startsAt"))
+                if starts_at is None or starts_at > now:
+                    continue
+            elif not document.get("active") or document.get("revokedAt"):
+                continue
+            if self._is_unexpired(document.get("expiresAt"), now):
+                return True
+        return False
+
+    def identity_membership(self, uid: str) -> dict | None:
+        return self._read_identity(uid)
+
+    def list_identity_memberships(
+        self,
+        query: str,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]:
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError as exc:
+            raise ValueError("Invalid admin cursor") from exc
+        normalized = query.strip().casefold()
+        predicates = ["c.entityType = 'identityMembership'"]
+        parameters: list[dict] = []
+        if normalized:
+            predicates.append(
+                "(CONTAINS(LOWER(c.uid), @query) OR "
+                "CONTAINS(LOWER(c.providerSubject), @query) OR "
+                "CONTAINS(LOWER(c.email), @query) OR "
+                "CONTAINS(LOWER(c.displayName), @query))"
+            )
+            parameters.append({"name": "@query", "value": normalized})
+        parameters.append({"name": "@offset", "value": offset})
+        parameters.append({"name": "@take", "value": limit + 1})
+        query_text = (
+            "SELECT * FROM c WHERE "
+            + " AND ".join(predicates)
+            + " ORDER BY c.createdAt DESC OFFSET @offset LIMIT @take"
+        )
+        documents = list(self._identities_container().query_items(
+            query=query_text,
+            parameters=parameters,
+            enable_cross_partition_query=True,
+        ))
+        has_more = len(documents) > limit
+        page = documents[:limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if has_more else None, has_more
+
+    def admin_overview_counts(self, now: datetime) -> dict[str, int]:
+        documents = list(self._identities_container().query_items(
+            query=(
+                "SELECT c.entityType, c.uid, c.active, c.startsAt, c.expiresAt, c.revokedAt "
+                "FROM c WHERE c.entityType IN ('appleSubscription', 'manualProGrant')"
+            ),
+            enable_cross_partition_query=True,
+        ))
+        active_apple: set[str] = set()
+        active_manual: set[str] = set()
+        expiring = 0
+        cutoff = now + timedelta(days=7)
+        for document in documents:
+            if document.get("entityType") == "manualProGrant":
+                if document.get("revokedAt"):
+                    continue
+                starts_at = self._parse_timestamp(document.get("startsAt"))
+                if starts_at is None or starts_at > now or not self._is_unexpired(document.get("expiresAt"), now):
+                    continue
+                uid = document.get("uid")
+                if isinstance(uid, str):
+                    active_manual.add(uid)
+                expires_at = self._parse_timestamp(document.get("expiresAt"))
+                if expires_at is not None and now < expires_at <= cutoff:
+                    expiring += 1
+            elif document.get("active") and not document.get("revokedAt") and self._is_unexpired(document.get("expiresAt"), now):
+                uid = document.get("uid")
+                if isinstance(uid, str):
+                    active_apple.add(uid)
+        return {
+            "activeProAccounts": len(active_apple | active_manual),
+            "activeManualGrantAccounts": len(active_manual),
+            "manualGrantsExpiringWithinDays": expiring,
+        }
+
+    def manual_pro_grants(self, uid: str) -> list[dict]:
+        return list(self._identities_container().query_items(
+            query=(
+                "SELECT * FROM c WHERE c.entityType = 'manualProGrant' AND c.uid = @uid "
+                "ORDER BY c.createdAt DESC"
+            ),
+            parameters=[{"name": "@uid", "value": uid}],
+            partition_key=uid,
+        ))
+
+    def manual_pro_grant(self, uid: str, grant_id: str) -> dict | None:
+        try:
+            document = self._identities_container().read_item(
+                item=grant_id,
+                partition_key=uid,
+            )
+        except CosmosResourceNotFoundError:
+            return None
+        return document if document.get("entityType") == "manualProGrant" else None
+
+    def list_manual_pro_grants(
+        self,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]:
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError as exc:
+            raise ValueError("Invalid admin cursor") from exc
+        documents = list(self._identities_container().query_items(
+            query=(
+                "SELECT * FROM c WHERE c.entityType = 'manualProGrant' "
+                "ORDER BY c.createdAt DESC OFFSET @offset LIMIT @take"
+            ),
+            parameters=[
+                {"name": "@offset", "value": offset},
+                {"name": "@take", "value": limit + 1},
+            ],
+            enable_cross_partition_query=True,
+        ))
+        has_more = len(documents) > limit
+        page = documents[:limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if has_more else None, has_more
+
+    def upsert_manual_pro_grant(self, document: dict) -> dict:
+        return self._identities_container().upsert_item(body=document)
+
+    def append_admin_audit(self, document: dict) -> dict:
+        try:
+            return self._identities_container().create_item(body=document)
+        except CosmosResourceExistsError:
+            return self._identities_container().read_item(
+                item=document["id"], partition_key=document["uid"]
+            )
+
+    def list_admin_audit(
+        self,
+        *,
+        uid: str | None,
+        action: str | None,
+        outcome: str | None,
+        from_at: datetime | None,
+        to_at: datetime | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]:
+        try:
+            offset = max(0, int(cursor or "0"))
+        except ValueError as exc:
+            raise ValueError("Invalid admin cursor") from exc
+        predicates = ["c.entityType = 'adminAuditEvent'"]
+        parameters: list[dict] = []
+        for name, value, field in (
+            ("uid", uid, "c.uid"),
+            ("action", action, "c.action"),
+            ("outcome", outcome, "c.outcome"),
+        ):
+            if value:
+                predicates.append(f"{field} = @{name}")
+                parameters.append({"name": f"@{name}", "value": value})
+        if from_at:
+            predicates.append("c.createdAt >= @fromAt")
+            parameters.append({"name": "@fromAt", "value": self._timestamp(from_at)})
+        if to_at:
+            predicates.append("c.createdAt < @toAt")
+            parameters.append({"name": "@toAt", "value": self._timestamp(to_at)})
+        parameters.extend([
+            {"name": "@offset", "value": offset},
+            {"name": "@take", "value": limit + 1},
+        ])
+        query_text = (
+            "SELECT * FROM c WHERE "
+            + " AND ".join(predicates)
+            + " ORDER BY c.createdAt DESC OFFSET @offset LIMIT @take"
+        )
+        documents = list(self._identities_container().query_items(
+            query=query_text,
+            parameters=parameters,
+            enable_cross_partition_query=True,
+        ))
+        has_more = len(documents) > limit
+        page = documents[:limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if has_more else None, has_more
 
     def run_retention(self, now: datetime) -> RetentionResult:
         tombstone_cutoff = (now - timedelta(days=30)).isoformat().replace("+00:00", "Z")
@@ -1527,6 +1795,25 @@ class CosmosHouseholdStorage:
     @staticmethod
     def _timestamp(value: datetime) -> str:
         return value.isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        return parsed.astimezone(UTC)
+
+    @classmethod
+    def _is_unexpired(cls, value: Any, now: datetime) -> bool:
+        if value in (None, ""):
+            return True
+        parsed = cls._parse_timestamp(value)
+        return parsed is not None and parsed > now
 
     @staticmethod
     def _window_start(value: str | None, now: datetime, seconds: int) -> datetime:

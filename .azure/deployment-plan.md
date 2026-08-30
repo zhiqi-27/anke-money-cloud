@@ -1,6 +1,6 @@
 # Anke Money Production Deployment Plan
 
-Status: Production runtime, final TestFlight candidate, physical-device authentication, and Production APNs verified
+Status: Validated
 
 ## Objective
 
@@ -255,6 +255,21 @@ Production Azure environment for the single-maintainer release path.
 - Do not delete Production resources or data as a rollback action.
 
 ## Validation Proof
+
+- 2026-08-28 subscription update: `.venv/bin/python -m compileall -q app test`
+  passed and `.venv/bin/python -m unittest discover -s test` passed all `111`
+  tests, including Apple entitlement binding, cross-account protection, and
+  notification-driven expiration.
+- 2026-08-28 Azure validation: the azure-validate Bicep workflow passed Azure
+  CLI authentication, Bicep compilation, resource-group template validation,
+  and what-if against subscription `a1187bf2-2e2f-4e05-aaea-407163a009f5`
+  and resource group `anke-money-prod`. The what-if reported Create `8`, Modify
+  `31`, Delete `27`; therefore this release must use code-only Function package
+  deployment and must not apply the infrastructure template.
+- 2026-08-28 static RBAC review reconfirmed the dedicated Production managed
+  identity and resource-scoped Cosmos data, Storage data, Metrics Publisher,
+  and Key Vault Secrets User assignments. No RBAC change is required for Apple
+  signed-data verification.
 
 - Bicep CLI `0.38.5` lint and build passed for `infra/main.bicep`.
 - `infra/main.parameters.json` passed JSON validation.

@@ -24,6 +24,8 @@ class SettingsTest(unittest.TestCase):
             "ANKE_APNS_KEY_ID": "KEYID1234",
             "ANKE_APNS_PRIVATE_KEY": "-----BEGIN PRIVATE KEY-----synthetic-----END PRIVATE KEY-----",
             "ANKE_APNS_TOPIC": "app.ankemoney.ios",
+            "ANKE_APPLE_APP_ID": "6800547254",
+            "ANKE_APPLE_ROOT_CERTIFICATES_BASE64": "YQ==",
         }
 
     def test_defaults_are_local_and_do_not_enable_smoke(self):

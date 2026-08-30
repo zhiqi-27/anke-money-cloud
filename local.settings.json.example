@@ -28,6 +28,8 @@
     "ANKE_APNS_TOPIC": "app.ankemoney.ios",
     "ANKE_AGENT_REQUESTS_PER_MINUTE": "120",
     "ANKE_AGENT_FAILED_AUTH_THRESHOLD": "5",
+    "ANKE_ADMIN_CLERK_SUBJECTS": "",
+    "ANKE_ADMIN_REQUESTS_PER_MINUTE": "60",
     "ANKE_MCP_ALLOWED_HOSTS": "testserver,localhost:*,127.0.0.1:*",
     "ANKE_MCP_ALLOWED_ORIGINS": "",
     "AZURE_CLIENT_ID": "",

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.46.1.21595",
-      "templateHash": "16403504949622082435"
+      "templateHash": "15317622303292642974"
     }
   },
   "parameters": {
@@ -52,6 +52,10 @@
       "defaultValue": ""
     },
     "alertEmail": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "alertActionGroupId": {
       "type": "string",
       "defaultValue": ""
     },
@@ -686,7 +690,7 @@
             }
           ]
         },
-        "actions": "[if(not(empty(parameters('alertEmail'))), createArray(createObject('actionGroupId', resourceId('Microsoft.Insights/actionGroups', format('azag{0}', variables('resourceToken'))))), createArray())]"
+        "actions": "[if(not(empty(parameters('alertEmail'))), createArray(createObject('actionGroupId', resourceId('Microsoft.Insights/actionGroups', format('azag{0}', variables('resourceToken'))))), if(not(empty(parameters('alertActionGroupId'))), createArray(createObject('actionGroupId', parameters('alertActionGroupId'))), createArray()))]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.Insights/actionGroups', format('azag{0}', variables('resourceToken')))]",

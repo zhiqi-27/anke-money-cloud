@@ -48,6 +48,55 @@ class HouseholdStorage(Protocol):
 
     def delete_account_data(self, uid: str) -> int: ...
 
+    def upsert_subscription_entitlement(self, document: dict) -> dict: ...
+
+    def subscription_entitlement(self, uid: str) -> dict | None: ...
+
+    def subscription_entitlements(self, uid: str) -> list[dict]: ...
+
+    def subscription_by_original_transaction_id(
+        self, original_transaction_id: str
+    ) -> dict | None: ...
+
+    def has_active_pro_entitlement(self, household_id: str) -> bool: ...
+
+    def identity_membership(self, uid: str) -> dict | None: ...
+
+    def list_identity_memberships(
+        self,
+        query: str,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]: ...
+
+    def admin_overview_counts(self, now: datetime) -> dict[str, int]: ...
+
+    def manual_pro_grants(self, uid: str) -> list[dict]: ...
+
+    def manual_pro_grant(self, uid: str, grant_id: str) -> dict | None: ...
+
+    def list_manual_pro_grants(
+        self,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]: ...
+
+    def upsert_manual_pro_grant(self, document: dict) -> dict: ...
+
+    def append_admin_audit(self, document: dict) -> dict: ...
+
+    def list_admin_audit(
+        self,
+        *,
+        uid: str | None,
+        action: str | None,
+        outcome: str | None,
+        from_at: datetime | None,
+        to_at: datetime | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]: ...
+
     def replace_agent_api_key(
         self,
         household_id: str,

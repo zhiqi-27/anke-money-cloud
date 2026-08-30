@@ -38,6 +38,7 @@ from app.models import (
     LedgerEntryCreate,
 )
 from app.storage.protocols import HouseholdStorage
+from app.services.billing import ProEntitlementRequiredError
 from app.services.agent_access import AgentAccessService
 from app.models.sync import SUPPORTED_FIAT_CURRENCIES
 
@@ -63,15 +64,19 @@ class CloudService:
         storage: HouseholdStorage,
         *,
         change_notifier: Callable[[str], object] | None = None,
+        entitlement_checker: Callable[[str], bool] | None = None,
     ):
         self._storage = storage
         self._change_notifier = change_notifier
+        self._entitlement_checker = entitlement_checker
 
     def bootstrap(
         self,
         identity: AuthenticatedIdentity,
         registration: DeviceRegistration,
     ) -> BootstrapResponse:
+        if self._entitlement_checker is not None:
+            self._require_pro_household(self._required_household(identity.uid))
         return self._storage.bootstrap_owner(identity.uid, registration)
 
     def register_push_token(
@@ -80,6 +85,7 @@ class CloudService:
         registration: PushTokenRegistration,
     ) -> None:
         household_id = self._required_household(identity.uid)
+        self._require_pro_household(household_id)
         device = self._storage.read_household_document(
             household_id, str(registration.device_id)
         )
@@ -531,6 +537,7 @@ class CloudService:
         limit: int,
     ) -> SyncPullResponse:
         household_id = self._required_household(identity.uid)
+        self._require_pro_household(household_id)
         changes, next_cursor, has_more = self._storage.pull_changes(
             household_id,
             cursor,
@@ -549,6 +556,7 @@ class CloudService:
         limit: int,
     ) -> AuditListResponse:
         household_id = self._required_household(identity.uid)
+        self._require_pro_household(household_id)
         events, next_cursor, has_more = self._storage.list_audit_events(
             household_id,
             cursor,
@@ -562,6 +570,7 @@ class CloudService:
         request: MigrationUploadRequest,
     ) -> MigrationResponse:
         household_id = self._required_household(identity.uid)
+        self._require_pro_household(household_id)
         actor = Actor(type=ActorType.user, id=identity.uid)
         return self._storage.stage_migration(household_id, actor, request)
 
@@ -572,6 +581,7 @@ class CloudService:
         content_digest: str,
     ) -> MigrationResponse:
         household_id = self._required_household(identity.uid)
+        self._require_pro_household(household_id)
         actor = Actor(type=ActorType.user, id=identity.uid)
         return self._storage.activate_migration(
             household_id,
@@ -599,11 +609,16 @@ class CloudService:
             )
 
     def _require_active_household(self, household_id: str) -> None:
+        self._require_pro_household(household_id)
         household = self._storage.read_household_document(household_id, household_id)
         if household is None or household.get("status") != "active":
             raise WorkspaceNotActiveError(
                 "Agent Cloud workspace must complete migration activation before normal writes"
             )
+
+    def _require_pro_household(self, household_id: str) -> None:
+        if self._entitlement_checker is not None and not self._entitlement_checker(household_id):
+            raise ProEntitlementRequiredError("An active Anke Pro subscription is required")
 
     def _accounting_currency(self, household_id: str) -> str:
         settings = self._storage.read_household_document(

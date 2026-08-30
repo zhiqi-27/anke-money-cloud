@@ -56,6 +56,30 @@ from app.models.agent import (
     OperationSource,
 )
 from app.models.auth import AnkeSessionResponse, ProfileUpdateRequest
+from app.models.billing import (
+    AppleEntitlementVerificationRequest,
+    AppleServerNotificationRequest,
+    ProEntitlementView,
+)
+from app.models.admin import (
+    AdminAuditEventView,
+    AdminAuditListResponse,
+    AdminEntitlementSummary,
+    AdminGrantCreateRequest,
+    AdminGrantMutationResponse,
+    AdminGrantRevokeRequest,
+    AdminGrantType,
+    AdminManualGrantView,
+    AdminManualGrantListItem,
+    AdminManualGrantListResponse,
+    AdminOverviewResponse,
+    AdminUserDetail,
+    AdminUserListResponse,
+    AdminUserStatus,
+    AdminUserSummary,
+    AdminUserEntitlementResponse,
+    AdminAppleSubscriptionView,
+)
 
 __all__ = [
     "Actor",
@@ -111,4 +135,24 @@ __all__ = [
     "OperationSource",
     "AnkeSessionResponse",
     "ProfileUpdateRequest",
+    "AppleEntitlementVerificationRequest",
+    "AppleServerNotificationRequest",
+    "ProEntitlementView",
+    "AdminAuditEventView",
+    "AdminAuditListResponse",
+    "AdminEntitlementSummary",
+    "AdminGrantCreateRequest",
+    "AdminGrantMutationResponse",
+    "AdminGrantRevokeRequest",
+    "AdminGrantType",
+    "AdminManualGrantView",
+    "AdminManualGrantListItem",
+    "AdminManualGrantListResponse",
+    "AdminOverviewResponse",
+    "AdminUserDetail",
+    "AdminUserListResponse",
+    "AdminUserStatus",
+    "AdminUserSummary",
+    "AdminUserEntitlementResponse",
+    "AdminAppleSubscriptionView",
 ]

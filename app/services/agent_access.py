@@ -14,6 +14,7 @@ from app.models import (
     AgentPrincipal,
 )
 from app.storage.protocols import HouseholdStorage
+from app.services.billing import ProEntitlementRequiredError
 
 
 class InvalidAgentTokenError(RuntimeError):
@@ -31,10 +32,12 @@ class AgentAccessService:
         *,
         requests_per_minute: int = 120,
         failed_auth_threshold: int = 5,
+        entitlement_checker=None,
     ):
         self._storage = storage
         self._requests_per_minute = requests_per_minute
         self._failed_auth_threshold = failed_auth_threshold
+        self._entitlement_checker = entitlement_checker
 
     def create_api_key(
         self,
@@ -79,6 +82,10 @@ class AgentAccessService:
                 5 * 60,
             )
             raise InvalidAgentTokenError("Invalid or revoked agent API key")
+        if self._entitlement_checker is not None and not self._entitlement_checker(
+            str(principal.household_id)
+        ):
+            raise ProEntitlementRequiredError("An active Anke Pro subscription is required")
         if not self._storage.consume_agent_request(
             household_id,
             connection_id,

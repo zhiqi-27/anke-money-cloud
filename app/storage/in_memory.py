@@ -44,6 +44,9 @@ class InMemoryHouseholdStorage:
         self._items: dict[tuple[str, str], dict] = {}
         self._identities: dict[str, str] = {}
         self._identity_documents: dict[str, dict] = {}
+        self._subscription_documents: dict[str, dict] = {}
+        self._manual_grant_documents: dict[str, dict] = {}
+        self._admin_audit_documents: dict[str, dict] = {}
         self._changes: dict[str, list[dict]] = {}
         self._device_sequences: dict[tuple[str, str], int] = {}
         self._lock = RLock()
@@ -202,10 +205,13 @@ class InMemoryHouseholdStorage:
                 "entityType": "identityMembership",
                 "provider": identity.provider,
                 "providerSubject": identity.provider_subject,
+                "email": identity.email,
+                "displayName": identity.display_name,
                 "householdId": household_id,
                 "userId": user_id,
                 "role": "owner",
                 "createdAt": now,
+                "updatedAt": now,
             }
             self._identity_documents[uid] = membership
 
@@ -230,6 +236,7 @@ class InMemoryHouseholdStorage:
             document["email"] = identity.email
         if identity.display_name:
             document["displayName"] = identity.display_name
+        document["updatedAt"] = self._timestamp(datetime.now(UTC))
         household_id = self._identities[identity.uid]
         user_id = str(uuid5(NAMESPACE_URL, f"anke-user:{identity.uid}"))
         user = self._items.get((household_id, user_id))
@@ -255,7 +262,216 @@ class InMemoryHouseholdStorage:
             for key in [key for key in self._device_sequences if key[0] == household_id]:
                 del self._device_sequences[key]
             self._identity_documents.pop(uid, None)
+            for key in [
+                key for key, value in self._subscription_documents.items()
+                if value.get("uid") == uid
+            ]:
+                del self._subscription_documents[key]
+            for key in [
+                key for key, value in self._manual_grant_documents.items()
+                if value.get("uid") == uid
+            ]:
+                del self._manual_grant_documents[key]
+            for key in [
+                key for key, value in self._admin_audit_documents.items()
+                if value.get("targetUid") == uid
+            ]:
+                del self._admin_audit_documents[key]
             return len(keys)
+
+    def upsert_subscription_entitlement(self, document: dict) -> dict:
+        with self._lock:
+            stored = dict(document)
+            self._subscription_documents[stored["id"]] = stored
+            return dict(stored)
+
+    def subscription_entitlement(self, uid: str) -> dict | None:
+        matches = self.subscription_entitlements(uid)
+        if not matches:
+            return None
+        return dict(max(matches, key=lambda value: value.get("updatedAt", "")))
+
+    def subscription_entitlements(self, uid: str) -> list[dict]:
+        return [
+            dict(value)
+            for value in self._subscription_documents.values()
+            if value.get("uid") == uid
+        ]
+
+    def subscription_by_original_transaction_id(
+        self, original_transaction_id: str
+    ) -> dict | None:
+        document = self._subscription_documents.get(
+            f"apple-subscription:{original_transaction_id}"
+        )
+        return dict(document) if document is not None else None
+
+    def has_active_pro_entitlement(self, household_id: str) -> bool:
+        now = datetime.now(UTC)
+        for document in self._subscription_documents.values():
+            if (
+                document.get("householdId") != household_id
+                or not document.get("active")
+                or document.get("revokedAt")
+            ):
+                continue
+            expires_at = self._parse_datetime(document.get("expiresAt"))
+            if expires_at is None or expires_at > now:
+                return True
+        for document in self._manual_grant_documents.values():
+            if document.get("householdId") != household_id:
+                continue
+            if self._is_active_manual_grant(document, now):
+                return True
+        return False
+
+    def identity_membership(self, uid: str) -> dict | None:
+        document = self._identity_documents.get(uid)
+        return dict(document) if document is not None else None
+
+    def list_identity_memberships(
+        self,
+        query: str,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]:
+        normalized = query.strip().casefold()
+        offset = int(cursor or "0")
+        documents = []
+        for document in self._identity_documents.values():
+            searchable = " ".join(
+                str(document.get(field) or "")
+                for field in ("uid", "providerSubject", "email", "displayName")
+            ).casefold()
+            if normalized and normalized not in searchable:
+                continue
+            documents.append(dict(document))
+        documents.sort(key=lambda item: item.get("createdAt", ""), reverse=True)
+        page = documents[offset:offset + limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if next_offset < len(documents) else None, next_offset < len(documents)
+
+    def admin_overview_counts(self, now: datetime) -> dict[str, int]:
+        active_apple = {
+            document.get("uid")
+            for document in self._subscription_documents.values()
+            if document.get("uid")
+            and document.get("active")
+            and not document.get("revokedAt")
+            and self._is_not_expired(document.get("expiresAt"), now)
+        }
+        active_manual = {
+            document.get("uid")
+            for document in self._manual_grant_documents.values()
+            if document.get("uid") and self._is_active_manual_grant(document, now)
+        }
+        expiry_cutoff = now + timedelta(days=7)
+        expiring = 0
+        for document in self._manual_grant_documents.values():
+            if not self._is_active_manual_grant(document, now) or not document.get("expiresAt"):
+                continue
+            expires_at = self._parse_datetime(document.get("expiresAt"))
+            if expires_at is not None and now < expires_at <= expiry_cutoff:
+                expiring += 1
+        return {
+            "activeProAccounts": len(active_apple | active_manual),
+            "activeManualGrantAccounts": len(active_manual),
+            "manualGrantsExpiringWithinDays": expiring,
+        }
+
+    def manual_pro_grants(self, uid: str) -> list[dict]:
+        return sorted(
+            [
+                dict(value)
+                for value in self._manual_grant_documents.values()
+                if value.get("uid") == uid
+            ],
+            key=lambda value: (value.get("createdAt", ""), value.get("id", "")),
+            reverse=True,
+        )
+
+    def manual_pro_grant(self, uid: str, grant_id: str) -> dict | None:
+        document = self._manual_grant_documents.get(grant_id)
+        if document is None or document.get("uid") != uid:
+            return None
+        return dict(document)
+
+    def list_manual_pro_grants(
+        self,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]:
+        offset = int(cursor or "0")
+        documents = sorted(
+            (dict(value) for value in self._manual_grant_documents.values()),
+            key=lambda value: (value.get("createdAt", ""), value.get("id", "")),
+            reverse=True,
+        )
+        page = documents[offset:offset + limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if next_offset < len(documents) else None, next_offset < len(documents)
+
+    def upsert_manual_pro_grant(self, document: dict) -> dict:
+        with self._lock:
+            stored = dict(document)
+            self._manual_grant_documents[stored["id"]] = stored
+            return dict(stored)
+
+    def append_admin_audit(self, document: dict) -> dict:
+        with self._lock:
+            existing = self._admin_audit_documents.get(document["id"])
+            if existing is not None:
+                return dict(existing)
+            stored = dict(document)
+            self._admin_audit_documents[stored["id"]] = stored
+            return dict(stored)
+
+    def list_admin_audit(
+        self,
+        *,
+        uid: str | None,
+        action: str | None,
+        outcome: str | None,
+        from_at: datetime | None,
+        to_at: datetime | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], str | None, bool]:
+        offset = int(cursor or "0")
+        documents = []
+        for document in self._admin_audit_documents.values():
+            if uid and document.get("targetUid") != uid:
+                continue
+            if action and document.get("action") != action:
+                continue
+            if outcome and document.get("outcome") != outcome:
+                continue
+            created_at = self._parse_datetime(document.get("createdAt"))
+            if from_at and (created_at is None or created_at < from_at):
+                continue
+            if to_at and (created_at is None or created_at >= to_at):
+                continue
+            documents.append(dict(document))
+        documents.sort(key=lambda item: item.get("createdAt", ""), reverse=True)
+        page = documents[offset:offset + limit]
+        next_offset = offset + len(page)
+        return page, str(next_offset) if next_offset < len(documents) else None, next_offset < len(documents)
+
+    @staticmethod
+    def _is_not_expired(value: str | None, now: datetime) -> bool:
+        if not value:
+            return True
+        parsed = InMemoryHouseholdStorage._parse_datetime(value)
+        return parsed is not None and parsed > now
+
+    @classmethod
+    def _is_active_manual_grant(cls, document: dict, now: datetime) -> bool:
+        if document.get("revokedAt"):
+            return False
+        starts_at = cls._parse_datetime(document.get("startsAt"))
+        if starts_at is None or starts_at > now:
+            return False
+        return cls._is_not_expired(document.get("expiresAt"), now)
 
     def run_retention(self, now: datetime) -> RetentionResult:
         tombstone_cutoff = now - timedelta(days=30)

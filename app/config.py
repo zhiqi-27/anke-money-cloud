@@ -59,8 +59,17 @@ class Settings:
     apns_key_id: str = ""
     apns_private_key: str = ""
     apns_topic: str = "app.ankemoney.ios"
+    apple_app_id: int = 0
+    apple_bundle_id: str = "app.ankemoney.ios"
+    apple_product_ids: tuple[str, ...] = (
+        "app.ankemoney.ios.pro.monthly",
+        "app.ankemoney.ios.pro.yearly",
+    )
+    apple_root_certificates_base64: tuple[str, ...] = ()
     agent_requests_per_minute: int = 120
     agent_failed_auth_threshold: int = 5
+    admin_clerk_subjects: tuple[str, ...] = ()
+    admin_requests_per_minute: int = 60
     mcp_allowed_hosts: tuple[str, ...] = (
         "testserver",
         "localhost:*",
@@ -109,11 +118,28 @@ class Settings:
             apns_topic=os.getenv(
                 "ANKE_APNS_TOPIC", "app.ankemoney.ios"
             ).strip(),
+            apple_app_id=_integer(
+                "ANKE_APPLE_APP_ID", 0, minimum=0, maximum=9_999_999_999
+            ),
+            apple_bundle_id=os.getenv(
+                "ANKE_APPLE_BUNDLE_ID", "app.ankemoney.ios"
+            ).strip(),
+            apple_product_ids=_csv(
+                "ANKE_APPLE_PRODUCT_IDS",
+                "app.ankemoney.ios.pro.monthly,app.ankemoney.ios.pro.yearly",
+            ),
+            apple_root_certificates_base64=_csv(
+                "ANKE_APPLE_ROOT_CERTIFICATES_BASE64", ""
+            ),
             agent_requests_per_minute=_integer(
                 "ANKE_AGENT_REQUESTS_PER_MINUTE", 120, minimum=10, maximum=10_000
             ),
             agent_failed_auth_threshold=_integer(
                 "ANKE_AGENT_FAILED_AUTH_THRESHOLD", 5, minimum=3, maximum=100
+            ),
+            admin_clerk_subjects=_csv("ANKE_ADMIN_CLERK_SUBJECTS", ""),
+            admin_requests_per_minute=_integer(
+                "ANKE_ADMIN_REQUESTS_PER_MINUTE", 60, minimum=10, maximum=1_000
             ),
             mcp_allowed_hosts=_csv(
                 "ANKE_MCP_ALLOWED_HOSTS",
@@ -202,6 +228,16 @@ class Settings:
             )
         if not self.apns_configured:
             raise ConfigurationError("Production APNs credentials are required")
+        if not self.apple_app_id:
+            raise ConfigurationError("ANKE_APPLE_APP_ID is required in Production")
+        if self.apple_bundle_id != self.apns_topic:
+            raise ConfigurationError("Apple bundle ID must match the APNs topic")
+        if len(self.apple_product_ids) != 2:
+            raise ConfigurationError("Exactly two Anke Pro product IDs are required")
+        if not self.apple_root_certificates_base64:
+            raise ConfigurationError(
+                "ANKE_APPLE_ROOT_CERTIFICATES_BASE64 is required in Production"
+            )
         clerk_values = (self.clerk_issuer, self.clerk_jwks_url)
         unsafe_clerk_values = tuple(
             value for value in clerk_values if not self._is_default_clerk_domain(value)

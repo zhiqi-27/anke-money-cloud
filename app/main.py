@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 import logging
 import time
 import uuid
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -20,8 +20,11 @@ from app.dependencies import (
     cloud_service,
     current_agent,
     current_identity,
+    current_admin,
     clerk_bearer,
     clerk_management_service,
+    billing_service,
+    admin_service,
 )
 from app.models import (
     AgentAPIKeyCreated,
@@ -50,6 +53,19 @@ from app.models import (
     SyncPushResponse,
     AnkeSessionResponse,
     ProfileUpdateRequest,
+    AppleEntitlementVerificationRequest,
+    AppleServerNotificationRequest,
+    ProEntitlementView,
+    AdminAuditListResponse,
+    AdminGrantCreateRequest,
+    AdminGrantMutationResponse,
+    AdminGrantRevokeRequest,
+    AdminManualGrantListResponse,
+    AdminOverviewResponse,
+    AdminUserDetail,
+    AdminUserEntitlementResponse,
+    AdminUserListResponse,
+    AdminUserStatus,
 )
 from app.services import (
     AgentAccessService,
@@ -58,6 +74,17 @@ from app.services import (
     ClerkManagementClient,
     ClerkManagementError,
     WorkspaceNotActiveError,
+    AppleBillingService,
+    AppleTransactionAlreadyLinkedError,
+    InvalidAppleTransactionError,
+    ProEntitlementRequiredError,
+    AdminGrantAlreadyRevokedError,
+    AdminGrantNotFoundError,
+    AdminIdempotencyConflictError,
+    AdminInvalidGrantPeriodError,
+    AdminService,
+    AdminTargetNotFoundError,
+    AdminTargetNotReadyError,
 )
 from app.services.cloud import DeviceRegistrationRequiredError, MembershipRequiredError
 from app.mcp_server import mcp_asgi_app
@@ -148,6 +175,14 @@ async def workspace_not_active(request: Request, exc: WorkspaceNotActiveError):
     )
 
 
+@fastapi_app.exception_handler(ProEntitlementRequiredError)
+async def pro_entitlement_required(request: Request, exc: ProEntitlementRequiredError):
+    return JSONResponse(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        content={"detail": "An active Anke Pro subscription is required"},
+    )
+
+
 @fastapi_app.get("/ping", tags=["health"], summary="Process health")
 async def ping() -> dict[str, str]:
     return {
@@ -212,6 +247,270 @@ async def me(
         "displayName": identity.display_name,
         "email": identity.email,
     }
+
+
+@fastapi_app.post(
+    "/api/v1/billing/apple/verify",
+    tags=["billing"],
+    response_model=ProEntitlementView,
+    summary="Verify an Apple transaction and bind Anke Pro to this account",
+)
+async def verify_apple_entitlement(
+    request: AppleEntitlementVerificationRequest,
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: AppleBillingService = Depends(billing_service),
+) -> ProEntitlementView:
+    try:
+        return service.verify_and_bind(identity, request.signed_transaction)
+    except InvalidAppleTransactionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Apple transaction",
+        ) from exc
+    except AppleTransactionAlreadyLinkedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Apple subscription is already linked",
+        ) from exc
+
+
+@fastapi_app.get(
+    "/api/v1/billing/entitlement",
+    tags=["billing"],
+    response_model=ProEntitlementView,
+    summary="Return the current account's server-verified Anke Pro entitlement",
+)
+async def pro_entitlement(
+    identity: AuthenticatedIdentity = Depends(current_identity),
+    service: AppleBillingService = Depends(billing_service),
+) -> ProEntitlementView:
+    return service.entitlement(identity)
+
+
+@fastapi_app.post(
+    "/api/v1/billing/apple/notifications",
+    tags=["billing"],
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Receive App Store Server Notifications V2",
+)
+async def apple_server_notification(
+    request: AppleServerNotificationRequest,
+    service: AppleBillingService = Depends(billing_service),
+) -> Response:
+    try:
+        service.process_notification(request.signed_payload)
+    except InvalidAppleTransactionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid Apple notification",
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _require_admin_idempotency_key(value: str | None) -> str:
+    if not value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Idempotency-Key header is required",
+        )
+    try:
+        UUID(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Idempotency-Key must be a UUID",
+        ) from exc
+    return value
+
+
+@fastapi_app.get(
+    "/admin/v1/overview",
+    tags=["admin"],
+    response_model=AdminOverviewResponse,
+    summary="Return non-financial administrative counters",
+)
+async def admin_overview(
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminOverviewResponse:
+    return service.overview()
+
+
+@fastapi_app.get(
+    "/admin/v1/users",
+    tags=["admin"],
+    response_model=AdminUserListResponse,
+    summary="Search identity metadata without household financial data",
+)
+async def admin_users(
+    q: str = Query(min_length=1, max_length=120),
+    status_filter: AdminUserStatus = Query(default=AdminUserStatus.all, alias="status"),
+    limit: int = Query(default=25, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=2048),
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminUserListResponse:
+    try:
+        return service.list_users(q, status_filter, limit, cursor)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor") from exc
+
+
+@fastapi_app.get(
+    "/admin/v1/users/{uid}",
+    tags=["admin"],
+    response_model=AdminUserDetail,
+    summary="Read one identity profile and effective entitlement",
+)
+async def admin_user(
+    uid: str,
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminUserDetail:
+    try:
+        return service.user_detail(uid)
+    except AdminTargetNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found") from exc
+
+
+@fastapi_app.get(
+    "/admin/v1/users/{uid}/entitlement",
+    tags=["admin"],
+    response_model=AdminUserEntitlementResponse,
+    summary="Read the provider and manual Pro source breakdown",
+)
+async def admin_user_entitlement(
+    uid: str,
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminUserEntitlementResponse:
+    try:
+        return service.entitlement_detail(uid)
+    except AdminTargetNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found") from exc
+
+
+@fastapi_app.post(
+    "/admin/v1/users/{uid}/manual-pro-grants",
+    tags=["admin"],
+    response_model=AdminGrantMutationResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create an auditable manual Pro grant",
+)
+async def admin_create_manual_grant(
+    uid: str,
+    http_request: Request,
+    request: AdminGrantCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminGrantMutationResponse:
+    key = _require_admin_idempotency_key(idempotency_key)
+    try:
+        return service.create_manual_grant(
+            identity,
+            uid,
+            request,
+            key,
+            http_request.headers.get("X-Request-ID"),
+        )
+    except AdminTargetNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found") from exc
+    except AdminTargetNotReadyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account is not ready for Pro access") from exc
+    except AdminIdempotencyConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Idempotency key conflict") from exc
+    except AdminInvalidGrantPeriodError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid grant period") from exc
+
+
+@fastapi_app.post(
+    "/admin/v1/users/{uid}/manual-pro-grants/{grant_id}/revoke",
+    tags=["admin"],
+    response_model=AdminGrantMutationResponse,
+    summary="Revoke one manual Pro grant without touching Apple evidence",
+)
+async def admin_revoke_manual_grant(
+    uid: str,
+    grant_id: str,
+    http_request: Request,
+    request: AdminGrantRevokeRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminGrantMutationResponse:
+    key = _require_admin_idempotency_key(idempotency_key)
+    try:
+        return service.revoke_manual_grant(
+            identity,
+            uid,
+            grant_id,
+            request,
+            key,
+            http_request.headers.get("X-Request-ID"),
+        )
+    except AdminTargetNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found") from exc
+    except AdminGrantNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Manual grant not found") from exc
+    except AdminGrantAlreadyRevokedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Manual grant is already revoked") from exc
+
+
+@fastapi_app.get(
+    "/admin/v1/audit",
+    tags=["admin"],
+    response_model=AdminAuditListResponse,
+    summary="List redacted administrative actions",
+)
+async def admin_audit(
+    uid: str | None = Query(default=None, max_length=256),
+    action: str | None = Query(default=None, max_length=120),
+    outcome: str | None = Query(default=None, max_length=32),
+    from_date: datetime | None = Query(default=None, alias="from"),
+    to_date: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=25, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=2048),
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminAuditListResponse:
+    try:
+        return service.audit(
+            uid=uid,
+            action=action,
+            outcome=outcome,
+            from_at=from_date,
+            to_at=to_date,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor") from exc
+
+
+@fastapi_app.get(
+    "/admin/v1/entitlements",
+    tags=["admin"],
+    response_model=AdminManualGrantListResponse,
+    summary="List manual Pro grants for operational follow-up",
+)
+async def admin_entitlements(
+    grant_status: str | None = Query(default=None, alias="status", pattern="^(active|expired|revoked)$"),
+    expiring_within_days: int | None = Query(default=None, ge=1, le=366),
+    limit: int = Query(default=25, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=2048),
+    identity: AuthenticatedIdentity = Depends(current_admin),
+    service: AdminService = Depends(admin_service),
+) -> AdminManualGrantListResponse:
+    try:
+        return service.list_manual_grants(
+            status=grant_status,
+            expiring_within_days=expiring_within_days,
+            limit=limit,
+            cursor=cursor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor") from exc
 
 
 @fastapi_app.patch(
