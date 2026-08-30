@@ -307,3 +307,19 @@ Production Azure environment for the single-maintainer release path.
   `Http5xx` site metric. The alert now uses the verified `CpuPercentage` metric
   at an 85% average threshold; `/ping`, the action-group binding, and the
   App Insights failure query were rechecked after the final deployment.
+
+- 2026-08-30 admin entitlement release validation: the Azure validation workflow
+  completed with Azure CLI authentication, Bicep compilation, resource-group
+  template validation, and what-if against subscription
+  `a1187bf2-2e2f-4e05-aaea-407163a009f5` and resource group `anke-money-prod`.
+  The what-if reported Create `8`, Modify `31`, Delete `27`; this release uses
+  code-only Function package deployment and does not apply the infrastructure
+  template.
+- 2026-08-30 Cloud gates: `.venv/bin/python -m unittest discover -s test -p
+  'test_*.py'` passed all `118` tests; compileall, Bicep build, parameters JSON
+  validation, and `git diff --check` passed.
+- 2026-08-30 static RBAC review reconfirmed one dedicated user-assigned
+  Production identity with resource-scoped Cosmos DB Built-in Data Contributor,
+  Storage Blob Owner/Contributor, Storage Queue/Table Contributor, Monitoring
+  Metrics Publisher, and Key Vault Secrets User role IDs. No subscription- or
+  resource-group-scoped data role was introduced by this release.
