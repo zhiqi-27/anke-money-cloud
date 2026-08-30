@@ -52,7 +52,7 @@ access. The iOS `isPro` or StoreKit state is not an authorization authority.
 
 ### Request credential
 
-Every `/admin/v1/*` request requires:
+Every `/internal/admin/v1/*` request requires:
 
 ```http
 Authorization: Bearer <short-lived Clerk session token>
@@ -88,7 +88,9 @@ an admin.
 
 ## 4. Common protocol rules
 
-- Base path: `/admin/v1`.
+- Base path: `/internal/admin/v1`.
+- The `/internal` segment is intentional: Azure Functions reserves `/admin/*`
+  for host-management endpoints, so the public route must not use that prefix.
 - JSON request and response bodies use the existing camelCase convention.
 - Timestamps are ISO-8601 UTC strings with an explicit `Z` suffix.
 - `limit` defaults to 25 and is capped at 100. `cursor` is opaque and must not
@@ -171,7 +173,7 @@ breakdown.
 
 ## 6. Endpoints
 
-### 6.1 `GET /admin/v1/overview`
+### 6.1 `GET /internal/admin/v1/overview`
 
 Returns small, non-financial operational counters:
 
@@ -187,7 +189,7 @@ Returns small, non-financial operational counters:
 
 The counts are accounts/identities, not ledger or household money metrics.
 
-### 6.2 `GET /admin/v1/users`
+### 6.2 `GET /internal/admin/v1/users`
 
 Searches identity metadata only. It never returns ledger or asset content.
 
@@ -228,7 +230,7 @@ yet completed Anke identity initialization, the endpoint may return a Clerk
 identity without a household and that account cannot receive a grant until the
 server identity is ready (`409 target_not_ready`).
 
-### 6.3 `GET /admin/v1/users/{uid}`
+### 6.3 `GET /internal/admin/v1/users/{uid}`
 
 Returns one account profile and a compact entitlement summary:
 
@@ -252,7 +254,7 @@ Returns one account profile and a compact entitlement summary:
 from the identity membership and never trusts a household ID from the path or
 body.
 
-### 6.4 `GET /admin/v1/users/{uid}/entitlement`
+### 6.4 `GET /internal/admin/v1/users/{uid}/entitlement`
 
 Returns the full provider/source breakdown needed by the detail page:
 
@@ -283,7 +285,7 @@ Returns the full provider/source breakdown needed by the detail page:
 Apple transaction IDs are shown only to an authenticated admin and are not
 accepted as input to any manual-grant operation.
 
-### 6.5 `POST /admin/v1/users/{uid}/manual-pro-grants`
+### 6.5 `POST /internal/admin/v1/users/{uid}/manual-pro-grants`
 
 Creates one manual grant. Required header:
 
@@ -341,7 +343,7 @@ Errors include `404 target_not_found`, `409 target_not_ready`,
 `409 idempotency_conflict`, `422 invalid_grant_period`,
 `422 invalid_grant_reason`, and `503 entitlement_storage_unavailable`.
 
-### 6.6 `POST /admin/v1/users/{uid}/manual-pro-grants/{grantId}/revoke`
+### 6.6 `POST /internal/admin/v1/users/{uid}/manual-pro-grants/{grantId}/revoke`
 
 Revokes one manual grant. This is idempotent: a replay of the same revocation
 returns the existing revoked record and does not create duplicate audit events.
@@ -375,7 +377,7 @@ If an Apple subscription remains active, `effectiveEntitlement.active` remains
 `true` and its source is reported as `apple`; revoking a manual grant never
 revokes an Apple subscription.
 
-### 6.7 `GET /admin/v1/audit`
+### 6.7 `GET /internal/admin/v1/audit`
 
 Lists administrative actions, newest first. Query parameters are `uid`,
 `action`, `outcome`, `from`, `to`, `limit`, and `cursor`.
@@ -406,7 +408,7 @@ the existing `anke_entities` audit stream partitioned by resolved
 queries are needed. This choice must not weaken the existing household
 partition boundary.
 
-### 6.8 `GET /admin/v1/entitlements`
+### 6.8 `GET /internal/admin/v1/entitlements`
 
 Lists manual Pro grants for operational follow-up. Query parameters are
 `status` (`active`, `expired`, or `revoked`), `expiringWithinDays`, `limit`, and
@@ -437,7 +439,7 @@ implemented:
 - `app/storage/protocols.py`, `app/storage/cosmos.py`, and
   `app/storage/in_memory.py`: manual-grant CRUD, expiry, revoke, and deletion;
 - `app/dependencies.py`: admin authentication and service dependencies;
-- `app/main.py`: `/admin/v1/*` routes and error mapping;
+- `app/main.py`: `/internal/admin/v1/*` routes and error mapping;
 - `test/test_billing.py`, new admin API tests, and storage tests.
 
 No iOS client UID, local `isPro`, Clerk metadata copied by the browser, or
@@ -474,7 +476,7 @@ hidden endpoint may become an entitlement authority.
 
 - Missing/invalid Clerk token returns `401`.
 - A valid ordinary Anke user returns `403`.
-- An allowlisted admin can read and mutate only through `/admin/v1/*`.
+- An allowlisted admin can read and mutate only through `/internal/admin/v1/*`.
 - Caller-supplied household IDs, arbitrary Cosmos IDs, and Apple transaction
   impersonation are rejected.
 

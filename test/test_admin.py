@@ -193,7 +193,7 @@ class AdminApiTest(unittest.TestCase):
         fastapi_app.dependency_overrides.clear()
 
     def test_admin_routes_do_not_return_financial_data_and_round_trip_grant(self):
-        response = self.client.get("/admin/v1/users", params={"q": "user2@example.com"})
+        response = self.client.get("/internal/admin/v1/users", params={"q": "user2@example.com"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["items"][0]["uid"], self.user.uid)
         self.assertNotIn("householdId", response.text)
@@ -202,7 +202,7 @@ class AdminApiTest(unittest.TestCase):
         now = datetime.now(UTC)
         grant_key = str(uuid4())
         response = self.client.post(
-            f"/admin/v1/users/{self.user.uid}/manual-pro-grants",
+            f"/internal/admin/v1/users/{self.user.uid}/manual-pro-grants",
             headers={"Idempotency-Key": grant_key},
             json={
                 "grantType": "fixedTerm",
@@ -215,7 +215,7 @@ class AdminApiTest(unittest.TestCase):
         self.assertTrue(response.json()["effectiveEntitlement"]["active"])
 
         entitlement = self.client.get(
-            f"/admin/v1/users/{self.user.uid}/entitlement"
+            f"/internal/admin/v1/users/{self.user.uid}/entitlement"
         )
         self.assertEqual(entitlement.status_code, 200)
         self.assertEqual(entitlement.json()["effective"]["sources"], ["manualGrant"])
@@ -225,7 +225,7 @@ class AdminApiTest(unittest.TestCase):
         with patch.dict(os.environ, {"ANKE_ADMIN_CLERK_SUBJECTS": ""}, clear=False):
             with patch("app.dependencies.get_clerk_verifier", return_value=FakeAdminClerkVerifier()):
                 response = self.client.get(
-                    "/admin/v1/overview", headers={"Authorization": "Bearer admin-token"}
+                    "/internal/admin/v1/overview", headers={"Authorization": "Bearer admin-token"}
                 )
         self.assertEqual(response.status_code, 503)
 

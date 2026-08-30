@@ -323,3 +323,7 @@ Production Azure environment for the single-maintainer release path.
   Storage Blob Owner/Contributor, Storage Queue/Table Contributor, Monitoring
   Metrics Publisher, and Key Vault Secrets User role IDs. No subscription- or
   resource-group-scoped data role was introduced by this release.
+- 2026-08-30 deployed-route smoke found that Azure Functions reserves `/admin/*`
+  for host management, so the admin API was moved to `/internal/admin/v1/*` and
+  the BFF, contract, IA, and tests were updated. Focused admin and billing tests
+  (`10`) plus compileall and secret scan passed after the route change.

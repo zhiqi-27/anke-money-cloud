@@ -41,7 +41,7 @@ Anke Money Admin (Next.js, Vercel default HTTPS host)
         │ Clerk administrator session
         │ Next.js server proxy / HttpOnly cookie
         ▼
-Anke Cloud Admin API (Azure Function, /admin/v1/*)
+Anke Cloud Admin API (Azure Function, /internal/admin/v1/*)
         │ Managed identity, no Cosmos key in browser
         ▼
 Cosmos manualProGrant + redacted admin audit

@@ -324,7 +324,7 @@ def _require_admin_idempotency_key(value: str | None) -> str:
 
 
 @fastapi_app.get(
-    "/admin/v1/overview",
+    "/internal/admin/v1/overview",
     tags=["admin"],
     response_model=AdminOverviewResponse,
     summary="Return non-financial administrative counters",
@@ -337,7 +337,7 @@ async def admin_overview(
 
 
 @fastapi_app.get(
-    "/admin/v1/users",
+    "/internal/admin/v1/users",
     tags=["admin"],
     response_model=AdminUserListResponse,
     summary="Search identity metadata without household financial data",
@@ -357,7 +357,7 @@ async def admin_users(
 
 
 @fastapi_app.get(
-    "/admin/v1/users/{uid}",
+    "/internal/admin/v1/users/{uid}",
     tags=["admin"],
     response_model=AdminUserDetail,
     summary="Read one identity profile and effective entitlement",
@@ -374,7 +374,7 @@ async def admin_user(
 
 
 @fastapi_app.get(
-    "/admin/v1/users/{uid}/entitlement",
+    "/internal/admin/v1/users/{uid}/entitlement",
     tags=["admin"],
     response_model=AdminUserEntitlementResponse,
     summary="Read the provider and manual Pro source breakdown",
@@ -391,7 +391,7 @@ async def admin_user_entitlement(
 
 
 @fastapi_app.post(
-    "/admin/v1/users/{uid}/manual-pro-grants",
+    "/internal/admin/v1/users/{uid}/manual-pro-grants",
     tags=["admin"],
     response_model=AdminGrantMutationResponse,
     status_code=status.HTTP_201_CREATED,
@@ -425,7 +425,7 @@ async def admin_create_manual_grant(
 
 
 @fastapi_app.post(
-    "/admin/v1/users/{uid}/manual-pro-grants/{grant_id}/revoke",
+    "/internal/admin/v1/users/{uid}/manual-pro-grants/{grant_id}/revoke",
     tags=["admin"],
     response_model=AdminGrantMutationResponse,
     summary="Revoke one manual Pro grant without touching Apple evidence",
@@ -458,7 +458,7 @@ async def admin_revoke_manual_grant(
 
 
 @fastapi_app.get(
-    "/admin/v1/audit",
+    "/internal/admin/v1/audit",
     tags=["admin"],
     response_model=AdminAuditListResponse,
     summary="List redacted administrative actions",
@@ -489,7 +489,7 @@ async def admin_audit(
 
 
 @fastapi_app.get(
-    "/admin/v1/entitlements",
+    "/internal/admin/v1/entitlements",
     tags=["admin"],
     response_model=AdminManualGrantListResponse,
     summary="List manual Pro grants for operational follow-up",
