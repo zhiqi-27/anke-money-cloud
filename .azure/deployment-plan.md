@@ -210,6 +210,19 @@ Production Azure environment for the single-maintainer release path.
   background correlation excludes the foreground polling path and closes the
   physical-device Production APNs gate.
 
+## Admin directory fallback update (2026-08-31)
+
+- Commit `884f831` adds a server-side Clerk Backend API directory projection to
+  admin account search and detail reads. Accounts without an Anke
+  `identityMembership` are shown as `householdReady=false`; manual grants still
+  require the server-owned identity/household to be ready.
+- The code-only Flex OneDeploy to `azfzepi6zekanwh2` completed as deployment
+  `25b8157b-da12-436a-a997-e72214a6d9ce` with Azure status `4`.
+- Post-deployment `GET /ping` returned `environment=prod`,
+  `GET /openapi.json` returned `200`, and unauthenticated admin search returned
+  `401`. No real account lookup, Cosmos write, or entitlement mutation was
+  performed during verification.
+
 ## Backup and monitoring evidence (2026-08-25)
 
 - Production Cosmos reports Continuous backup with the `Continuous7Days` tier,
