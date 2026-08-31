@@ -54,7 +54,7 @@ _admin_rate_events: dict[str, deque[float]] = defaultdict(deque)
 agent_bearer = HTTPBearer(
     auto_error=False,
     scheme_name="AgentBearer",
-    bearerFormat="Anke Skill API key",
+    bearerFormat="Anke Money Skill API key",
     description="The full-capability, owner-revocable Anke Money Skill API key.",
 )
 

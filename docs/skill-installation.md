@@ -1,4 +1,4 @@
-# Install the Anke Money Agent Skill
+# Install the Anke Money Skill
 
 The Skill is installed in the user's Agent host. It contains instructions and
 the Remote MCP dependency only; it never contains an Anke Money access token,
@@ -10,7 +10,7 @@ Apple credential, Anke session token, Cosmos credential, or household ID.
 2. Create the workspace's API Key.
 3. Copy the API Key when it is shown.
 
-The API Key grants six fixed scopes through seven Anke Skill tools and remains valid until
+The API Key grants six fixed scopes through seven Anke Money Skill tools and remains valid until
 the owner resets or revokes it. The service stores only a hash and a display
 prefix; plaintext is returned only after creation or reset.
 

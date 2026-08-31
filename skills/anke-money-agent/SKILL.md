@@ -3,7 +3,7 @@ name: anke-money-agent
 description: Safely transfer and update one user-authorized Anke Money household through its Remote MCP tools. Use when a user asks to read or visualize financial data, turn an uploaded document into confirmed ledger entries or asset accounts, create ledger entries, create asset accounts, or update one asset balance. Enforces confirmation before writes, stable idempotency keys, pagination, and narrow non-destructive operations.
 ---
 
-# Anke Money Agent
+# Anke Money Skill
 
 Use the connected Anke Money MCP server as the only data path. The connection
 uses the owner's long-lived Anke Money API Key, which binds one identity and one

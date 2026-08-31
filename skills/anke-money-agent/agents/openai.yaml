@@ -1,5 +1,5 @@
 interface:
-  display_name: "Anke Money Agent"
+  display_name: "Anke Money Skill"
   short_description: "Safely use one authorized Anke Money space"
   default_prompt: "Use $anke-money-agent to review my authorized Anke Money data and confirm before any write."
 dependencies:

@@ -45,7 +45,7 @@ transaction ID.
 | Effective entitlement | The union of currently active Apple entitlements and currently active manual grants. |
 | Admin identity | A verified Clerk identity that passes the server-side admin allowlist/role check. |
 
-The Azure service remains authoritative for cloud synchronization and Anke Skill
+The Azure service remains authoritative for cloud synchronization and Anke Money Skill
 access. The iOS `isPro` or StoreKit state is not an authorization authority.
 
 ## 3. Administrative authentication
