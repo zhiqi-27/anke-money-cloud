@@ -109,7 +109,7 @@ def billing_service() -> AppleBillingService:
 
 
 def admin_service() -> AdminService:
-    return AdminService(get_household_storage())
+    return AdminService(get_household_storage(), clerk_management_service())
 
 
 def auth_service() -> AuthService:

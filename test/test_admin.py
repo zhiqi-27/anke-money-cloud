@@ -9,9 +9,14 @@ from fastapi.testclient import TestClient
 from app.auth import AuthenticatedIdentity
 from app.dependencies import admin_service, billing_service, current_admin, current_identity
 from app.main import fastapi_app
-from app.models import AdminGrantCreateRequest, AdminGrantRevokeRequest
-from app.services.admin import AdminService, AdminIdempotencyConflictError
+from app.models import AdminGrantCreateRequest, AdminGrantRevokeRequest, AdminUserStatus
+from app.services.admin import (
+    AdminIdempotencyConflictError,
+    AdminService,
+    AdminTargetNotReadyError,
+)
 from app.services.billing import AppleBillingService, VerifiedAppleTransaction
+from app.services.clerk import ClerkDirectoryUser
 from app.storage.in_memory import InMemoryHouseholdStorage
 
 
@@ -169,6 +174,52 @@ class AdminServiceTest(unittest.TestCase):
             cursor=None,
         )
         self.assertEqual(audits.items, [])
+
+    def test_clerk_directory_fallback_finds_uninitialized_account(self):
+        directory_user = ClerkDirectoryUser(
+            provider_subject="user-uninitialized",
+            email="shizhiqi@gmail.com",
+            display_name="Zhiqi",
+            created_at=datetime(2026, 8, 20, tzinfo=UTC),
+        )
+
+        class Directory:
+            def search_users(self, query: str, limit: int):
+                return [directory_user] if query == "shizhiqi@gmail.com" else []
+
+            def get_user(self, provider_subject: str):
+                return directory_user if provider_subject == "user-uninitialized" else None
+
+        service = AdminService(self.storage, Directory())
+
+        result = service.list_users(
+            "shizhiqi@gmail.com",
+            status=AdminUserStatus.all,
+            limit=25,
+            cursor=None,
+        )
+        self.assertEqual([item.uid for item in result.items], ["clerk:user-uninitialized"])
+        self.assertEqual(result.items[0].email, "shizhiqi@gmail.com")
+        self.assertFalse(result.items[0].effective_entitlement.active)
+
+        detail = service.user_detail("clerk:user-uninitialized")
+        self.assertFalse(detail.household_ready)
+        entitlement = service.entitlement_detail("clerk:user-uninitialized")
+        self.assertEqual(entitlement.manual_grants, [])
+
+        with self.assertRaises(AdminTargetNotReadyError):
+            service.create_manual_grant(
+                self.admin,
+                "clerk:user-uninitialized",
+                AdminGrantCreateRequest(
+                    starts_at=self.now,
+                    expires_at=self.now + timedelta(days=7),
+                    reason="Should wait for cloud initialization",
+                ),
+                str(uuid4()),
+                "request-uninitialized",
+                self.now,
+            )
 
 
 class AdminApiTest(unittest.TestCase):

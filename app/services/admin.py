@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import logging
 from typing import Any
 
 from app.auth import AuthenticatedIdentity
+from app.config import ConfigurationError
 from app.models import (
     AdminAppleSubscriptionView,
     AdminAuditEventView,
@@ -25,8 +27,16 @@ from app.models import (
     AdminUserStatus,
     AdminUserSummary,
 )
+from app.services.clerk import (
+    ClerkDirectoryUser,
+    ClerkManagementClient,
+    ClerkManagementError,
+)
 from app.services.entitlements import EntitlementResolver
 from app.storage.protocols import HouseholdStorage
+
+
+logger = logging.getLogger(__name__)
 
 
 class AdminServiceError(RuntimeError):
@@ -60,8 +70,13 @@ class AdminInvalidGrantPeriodError(AdminServiceError):
 class AdminService:
     """Narrow, PII-minimized operator surface for Pro entitlement support."""
 
-    def __init__(self, storage: HouseholdStorage):
+    def __init__(
+        self,
+        storage: HouseholdStorage,
+        directory: ClerkManagementClient | None = None,
+    ):
         self._storage = storage
+        self._directory = directory
         self._entitlements = EntitlementResolver(storage)
 
     def overview(self, now: datetime | None = None) -> AdminOverviewResponse:
@@ -92,10 +107,10 @@ class AdminService:
         cursor: str | None,
     ) -> AdminUserListResponse:
         normalized = query.strip().casefold()
-        items: list[AdminUserSummary] = []
+        items_by_uid: dict[str, AdminUserSummary] = {}
         raw_cursor = cursor
         has_more = True
-        while len(items) < limit and has_more:
+        while len(items_by_uid) < limit and has_more:
             memberships, raw_cursor, has_more = self._storage.list_identity_memberships(
                 query, limit, raw_cursor
             )
@@ -108,24 +123,49 @@ class AdminService:
                     continue
                 if status is AdminUserStatus.manual_grant and "manualGrant" not in sources:
                     continue
-                items.append(summary)
-                if len(items) >= limit:
+                items_by_uid.setdefault(summary.uid, summary)
+                if len(items_by_uid) >= limit:
                     break
             if not memberships:
                 break
+        if cursor is None:
+            for directory_user in self._directory_search(query, limit):
+                summary = self._directory_summary(directory_user)
+                if not self._matches_status(summary, status):
+                    continue
+                existing = items_by_uid.get(summary.uid)
+                if existing is None:
+                    items_by_uid[summary.uid] = summary
+                else:
+                    # Keep the server-owned membership and entitlement state,
+                    # while filling stale/missing identity metadata from Clerk.
+                    items_by_uid[summary.uid] = existing.model_copy(update={
+                        "display_name": existing.display_name or summary.display_name,
+                        "email": existing.email or summary.email,
+                    })
+        items = list(items_by_uid.values())
         items.sort(key=lambda item: self._search_rank(item, normalized))
         return AdminUserListResponse(items=items[:limit], next_cursor=raw_cursor if has_more else None)
 
     def user_detail(self, uid: str) -> AdminUserDetail:
-        membership = self._require_identity(uid)
-        summary = self._summary(membership)
+        membership = self._storage.identity_membership(uid)
+        if membership is not None:
+            summary = self._summary(membership)
+            return AdminUserDetail(
+                **summary.model_dump(),
+                household_ready=bool(membership.get("householdId")),
+            )
+        directory_user = self._directory_user_for_uid(uid)
+        if directory_user is None:
+            raise AdminTargetNotFoundError("Account not found")
         return AdminUserDetail(
-            **summary.model_dump(),
-            household_ready=bool(membership.get("householdId")),
+            **self._directory_summary(directory_user).model_dump(),
+            household_ready=False,
         )
 
     def entitlement_detail(self, uid: str) -> AdminUserEntitlementResponse:
-        self._require_identity(uid)
+        if self._storage.identity_membership(uid) is None and self._directory_user_for_uid(uid) is None:
+            raise AdminTargetNotFoundError("Account not found")
         now = datetime.now(UTC)
         effective = self._entitlements.resolve(uid, now)
         apples = [self._apple_view(document, now) for document in effective.apple_documents]
@@ -189,7 +229,11 @@ class AdminService:
         request_id: str | None,
         now: datetime | None = None,
     ) -> AdminGrantMutationResponse:
-        membership = self._require_identity(uid)
+        membership = self._storage.identity_membership(uid)
+        if membership is None:
+            if self._directory_user_for_uid(uid) is not None:
+                raise AdminTargetNotReadyError("Anke identity is not ready")
+            raise AdminTargetNotFoundError("Account not found")
         household_id = membership.get("householdId")
         if not isinstance(household_id, str) or not household_id:
             raise AdminTargetNotReadyError("Anke identity is not ready")
@@ -339,6 +383,56 @@ class AdminService:
         if membership is None:
             raise AdminTargetNotFoundError("Account not found")
         return membership
+
+    def _directory_search(self, query: str, limit: int) -> list[ClerkDirectoryUser]:
+        if self._directory is None:
+            return []
+        try:
+            return self._directory.search_users(query, limit)
+        except (ClerkManagementError, ConfigurationError) as exc:
+            logger.warning(
+                "Clerk directory search unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            return []
+
+    def _directory_user_for_uid(self, uid: str) -> ClerkDirectoryUser | None:
+        if self._directory is None or not uid.startswith("clerk:"):
+            return None
+        provider_subject = uid.removeprefix("clerk:").strip()
+        if not provider_subject:
+            return None
+        try:
+            return self._directory.get_user(provider_subject)
+        except (ClerkManagementError, ConfigurationError) as exc:
+            logger.warning(
+                "Clerk directory lookup unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            return None
+
+    def _directory_summary(self, user: ClerkDirectoryUser) -> AdminUserSummary:
+        uid = f"clerk:{user.provider_subject}"
+        effective = self._entitlements.resolve(uid)
+        return AdminUserSummary(
+            uid=uid,
+            display_name=user.display_name,
+            email=user.email,
+            provider="clerk",
+            created_at=user.created_at or datetime.now(UTC),
+            effective_entitlement=self._effective_summary(effective),
+        )
+
+    @staticmethod
+    def _matches_status(summary: AdminUserSummary, status: AdminUserStatus) -> bool:
+        sources = set(summary.effective_entitlement.sources)
+        if status is AdminUserStatus.pro:
+            return summary.effective_entitlement.active
+        if status is AdminUserStatus.free:
+            return not summary.effective_entitlement.active
+        if status is AdminUserStatus.manual_grant:
+            return "manualGrant" in sources
+        return True
 
     def _summary(self, membership: dict) -> AdminUserSummary:
         uid = str(membership.get("uid") or membership.get("id"))

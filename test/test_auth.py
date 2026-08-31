@@ -176,6 +176,47 @@ class ClerkManagementClientTest(unittest.TestCase):
         with self.assertRaises(ClerkManagementError):
             client.delete_user("user_123")
 
+    def test_search_users_maps_primary_email_name_and_created_at(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.method, "GET")
+            self.assertEqual(request.url.path, "/v1/users")
+            self.assertEqual(request.url.params["query"], "shizhiqi@gmail.com")
+            self.assertEqual(request.url.params["limit"], "5")
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "user_123",
+                        "primary_email_address_id": "id_primary",
+                        "email_addresses": [
+                            {"id": "id_secondary", "email_address": "other@example.com"},
+                            {"id": "id_primary", "email_address": "shizhiqi@gmail.com"},
+                        ],
+                        "first_name": "Zhiqi",
+                        "last_name": "Shizhi",
+                        "created_at": 1_756_560_000_000,
+                    }
+                ],
+            )
+
+        users = self._client(handler).search_users(" shizhiqi@gmail.com ", 5)
+
+        self.assertEqual(len(users), 1)
+        self.assertEqual(users[0].provider_subject, "user_123")
+        self.assertEqual(users[0].email, "shizhiqi@gmail.com")
+        self.assertEqual(users[0].display_name, "Zhiqi Shizhi")
+        self.assertEqual(users[0].created_at, datetime(2025, 8, 30, 13, 20, tzinfo=UTC))
+
+    def test_get_user_returns_none_for_missing_clerk_identity(self):
+        client = self._client(
+            lambda request: (
+                self.assertEqual(request.url.path, "/v1/users/user_missing")
+                or httpx.Response(404, json={"errors": [{"code": "resource_not_found"}]})
+            )
+        )
+
+        self.assertIsNone(client.get_user("user_missing"))
+
 
 if __name__ == "__main__":
     unittest.main()
