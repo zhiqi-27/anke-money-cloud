@@ -22,7 +22,12 @@ from app.models import (
     SyncMutation,
     SyncPushRequest,
 )
-from app.services import AgentAccessService, CloudService, InvalidAgentTokenError
+from app.services import (
+    AgentAccessService,
+    CloudService,
+    InvalidAgentTokenError,
+    ProEntitlementRequiredError,
+)
 from app.storage.in_memory import InMemoryHouseholdStorage
 
 
@@ -71,6 +76,22 @@ class AgentAccessTest(unittest.TestCase):
         self.assertNotIn("apiKey", stored)
         self.assertNotIn("grantExpiresAt", stored)
         self.assertNotIn("refreshTokenHash", stored)
+
+    def test_free_account_cannot_create_or_use_agent_api_key(self):
+        free_cloud = CloudService(
+            self.storage,
+            entitlement_checker=lambda _: False,
+        )
+        with self.assertRaises(ProEntitlementRequiredError):
+            free_cloud.create_agent_api_key(self.identity, self.access)
+
+        created = self.cloud.create_agent_api_key(self.identity, self.access)
+        free_access = AgentAccessService(
+            self.storage,
+            entitlement_checker=lambda _: False,
+        )
+        with self.assertRaises(ProEntitlementRequiredError):
+            free_access.authenticate(created.api_key)
 
     def test_precompact_full_capability_api_key_remains_valid_until_reset(self):
         created = self.cloud.create_agent_api_key(self.identity, self.access)

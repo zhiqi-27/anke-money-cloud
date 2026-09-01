@@ -19,11 +19,19 @@ compatible with the current product.
 
 - Every household request resolves active membership before storage access.
 - Every storage point operation includes the resolved `householdId` partition key.
+- Owner-device bootstrap, migration, push, pull, audit, and push-token operations
+  require authentication, membership, device/workspace state, and household
+  isolation, but do not require a paid entitlement.
 - The single workspace Agent API Key always has the fixed capabilities
   `ledger:read`, `ledger:create`, `assets:read`,
   `assets:update`, `categories:read`, and `channels:read`.
 - Revocation must be enforced on the next request, not only at token issuance.
 - Internal smoke tooling is never an end-user API and cannot run in Production.
+
+An active account-bound Anke Money Pro entitlement is required when the owner
+creates or manages the Agent API Key and whenever an Agent API Key is authenticated.
+Entitlement expiry rejects Agent HTTP, MCP, and Skill access without changing the
+owner's workspace or synchronized financial data.
 
 The key does not expire and has no refresh credential. It stays valid until reset,
 revocation, or workspace deletion. Ledger history updates, permanent delete,

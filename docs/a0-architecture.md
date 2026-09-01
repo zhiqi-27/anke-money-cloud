@@ -384,3 +384,22 @@ record currencies. Changing accounting currency is a settings mutation; clients
 convert aggregate presentation with cached rates and convert budgets once. Agent
 writes use the household accounting currency. Rollback keeps the additive fields
 and treats missing currency as CNY; no container or partition change is required.
+
+## Approved amendment · 2026-09-01 · Free owner synchronization and paid Agent access
+
+Every authenticated owner may bootstrap, migrate, push, pull, register a device
+token, and read synchronization audit state without an Anke Money Pro entitlement.
+Owner synchronization authorization is derived from the verified Anke session,
+active membership, device registration, workspace lifecycle, and household
+partition; subscription state is not a storage-authority or data-visibility rule.
+
+Anke Money Pro remains required for creating or managing the Agent API Key and for
+every direct Agent HTTP, Remote MCP, or Anke Money Skill request. Entitlement loss
+rejects paid Agent access on the next server-authorized request while leaving the
+owner's workspace, replica synchronization, and financial data unchanged.
+
+This is an authorization-policy change only. It requires no Cosmos resource,
+partition, document-shape, financial-data, workspace, API Key, or subscription
+migration. Rollback may restore a commercial sync gate only through a new product
+amendment; it must not remove, hide, or fork records synchronized while the free
+policy was active.

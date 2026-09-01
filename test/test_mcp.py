@@ -1,7 +1,7 @@
 import hashlib
 import json
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -12,6 +12,7 @@ from mcp.types import Implementation
 
 from app.auth import AuthenticatedIdentity
 from app.main import fastapi_app
+from app.mcp_server import AgentMCPTokenVerifier
 from app.models import (
     Actor,
     ActorType,
@@ -56,10 +57,29 @@ class RemoteMCPContractTest(unittest.IsolatedAsyncioTestCase):
         )
         self.cloud.activate_migration(self.identity, session_id, digest)
 
+    async def test_streamable_http_rejects_agent_key_without_pro_entitlement(self):
+        connection = self.cloud.create_agent_api_key(self.identity, self.access)
+
+        with patch("app.dependencies.get_household_storage", return_value=self.storage):
+            verified = await AgentMCPTokenVerifier().verify_token(connection.api_key)
+
+        self.assertIsNone(verified)
+
     async def test_streamable_http_exposes_nine_tools_and_audits_idempotent_writes(self):
         connection = self.cloud.create_agent_api_key(self.identity, self.access)
         household_id = self.storage.household_for_uid(self.identity.uid)
         self.assertIsNotNone(household_id)
+        self.storage.upsert_subscription_entitlement(
+            {
+                "id": "apple-subscription:mcp-contract",
+                "uid": self.identity.uid,
+                "householdId": household_id,
+                "active": True,
+                "expiresAt": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                "revokedAt": None,
+                "updatedAt": datetime.now(UTC).isoformat(),
+            }
+        )
         self.storage.create_agent_entity(
             household_id,
             Actor(type=ActorType.agent, id=str(connection.connection_id)),

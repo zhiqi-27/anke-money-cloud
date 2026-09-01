@@ -27,6 +27,7 @@ from app.services import (
     AgentRateLimitExceededError,
     CloudService,
     InvalidAgentTokenError,
+    ProEntitlementRequiredError,
 )
 
 
@@ -36,9 +37,17 @@ class AgentMCPTokenVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         from app.dependencies import get_household_storage
 
+        storage = get_household_storage()
         try:
-            principal = AgentAccessService(get_household_storage()).authenticate(token)
-        except (InvalidAgentTokenError, AgentRateLimitExceededError):
+            principal = AgentAccessService(
+                storage,
+                entitlement_checker=storage.has_active_pro_entitlement,
+            ).authenticate(token)
+        except (
+            InvalidAgentTokenError,
+            AgentRateLimitExceededError,
+            ProEntitlementRequiredError,
+        ):
             return None
         if principal.integration not in {OperationSource.mcp, OperationSource.skill}:
             return None
@@ -72,9 +81,11 @@ def _principal() -> AgentPrincipal:
 def _service() -> CloudService:
     from app.dependencies import get_household_storage, get_push_notification_service
 
+    storage = get_household_storage()
     return CloudService(
-        get_household_storage(),
+        storage,
         change_notifier=get_push_notification_service().notify_household,
+        entitlement_checker=storage.has_active_pro_entitlement,
     )
 
 

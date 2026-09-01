@@ -113,6 +113,54 @@ class CloudSyncTest(unittest.TestCase):
             {"user", "household", "device", "connection"},
         )
 
+    def test_free_account_can_migrate_sync_and_register_push_token(self):
+        storage = InMemoryHouseholdStorage()
+        service = CloudService(storage, entitlement_checker=lambda _: False)
+        identity = AuthenticatedIdentity(uid="apple:free-owner")
+        device_id = uuid4()
+        bootstrap = service.bootstrap(identity, registration(device_id))
+        digest = hashlib.sha256(b"[]").hexdigest()
+        session_id = uuid4()
+
+        service.stage_migration(
+            identity,
+            MigrationUploadRequest(
+                device_id=device_id,
+                manifest=MigrationManifest(
+                    session_id=session_id,
+                    source_mode=MigrationSourceMode.local,
+                    schema_version=1,
+                    record_counts={},
+                    content_digest=digest,
+                ),
+                items=[],
+            ),
+        )
+        service.activate_migration(identity, session_id, digest)
+        created = mutation(device_id)
+        pushed = service.push(
+            identity,
+            SyncPushRequest(device_id=device_id, mutations=[created]),
+        )
+        pulled = service.pull(identity, None, 100)
+        service.register_push_token(
+            identity,
+            PushTokenRegistration(
+                device_id=device_id,
+                token="ab" * 32,
+                environment="sandbox",
+                topic="app.ankemoney.ios",
+                app_version="0.1.0",
+            ),
+        )
+
+        self.assertEqual(pushed.results[0].status, MutationStatus.accepted)
+        self.assertIn(str(created.entity_id), {item.entity_id for item in pulled.changes})
+        self.assertEqual(
+            len(storage.active_push_tokens(str(bootstrap.household_id))),
+            1,
+        )
+
     def test_push_token_is_persisted_refreshed_and_can_be_disabled(self):
         request = PushTokenRegistration(
             device_id=self.device_id,

@@ -75,8 +75,6 @@ class CloudService:
         identity: AuthenticatedIdentity,
         registration: DeviceRegistration,
     ) -> BootstrapResponse:
-        if self._entitlement_checker is not None:
-            self._require_pro_household(self._required_household(identity.uid))
         return self._storage.bootstrap_owner(identity.uid, registration)
 
     def register_push_token(
@@ -85,7 +83,6 @@ class CloudService:
         registration: PushTokenRegistration,
     ) -> None:
         household_id = self._required_household(identity.uid)
-        self._require_pro_household(household_id)
         device = self._storage.read_household_document(
             household_id, str(registration.device_id)
         )
@@ -112,7 +109,7 @@ class CloudService:
         access: AgentAccessService,
     ) -> AgentAPIKeyCreated:
         household_id = self._required_household(identity.uid)
-        self._require_active_household(household_id)
+        self._require_active_pro_household(household_id)
         return access.create_api_key(household_id, identity.uid)
 
     def agent_api_key(
@@ -120,7 +117,7 @@ class CloudService:
         identity: AuthenticatedIdentity,
     ) -> AgentAPIKeyView | None:
         household_id = self._required_household(identity.uid)
-        self._require_active_household(household_id)
+        self._require_active_pro_household(household_id)
         return self._storage.agent_api_key(household_id)
 
     def revoke_agent_api_key(
@@ -128,7 +125,7 @@ class CloudService:
         identity: AuthenticatedIdentity,
     ) -> AgentAPIKeyView | None:
         household_id = self._required_household(identity.uid)
-        self._require_active_household(household_id)
+        self._require_active_pro_household(household_id)
         return self._storage.revoke_agent_api_key(
             household_id,
             Actor(type=ActorType.user, id=identity.uid),
@@ -140,7 +137,7 @@ class CloudService:
         principal: AgentPrincipal,
         request: AgentLedgerEntryCreate,
     ) -> AgentLedgerCreateResponse:
-        self._require_active_household(str(principal.household_id))
+        self._require_active_pro_household(str(principal.household_id))
         self._require_agent_scope(
             principal, AgentScope.ledger_create, "ledger.create"
         )
@@ -162,7 +159,7 @@ class CloudService:
         principal: AgentPrincipal,
         request: AgentLedgerBatchCreate,
     ) -> AgentLedgerBatchCreateResponse:
-        self._require_active_household(str(principal.household_id))
+        self._require_active_pro_household(str(principal.household_id))
         self._require_agent_scope(
             principal, AgentScope.ledger_create, "ledger.create.batch"
         )
@@ -263,7 +260,7 @@ class CloudService:
         account_id: UUID,
         request: AgentAssetUpdate,
     ) -> AgentEntityCreateResponse:
-        self._require_active_household(str(principal.household_id))
+        self._require_active_pro_household(str(principal.household_id))
         self._require_agent_scope(
             principal, AgentScope.assets_update, "assets.update"
         )
@@ -341,7 +338,7 @@ class CloudService:
         request: AgentAssetCreate,
     ) -> AgentAssetCreateResponse:
         household_id = str(principal.household_id)
-        self._require_active_household(household_id)
+        self._require_active_pro_household(household_id)
         self._require_agent_scope(
             principal, AgentScope.assets_update, "assets.create"
         )
@@ -422,7 +419,7 @@ class CloudService:
         request: AgentAssetBatchCreate,
     ) -> AgentAssetBatchCreateResponse:
         household_id = str(principal.household_id)
-        self._require_active_household(household_id)
+        self._require_active_pro_household(household_id)
         self._require_agent_scope(
             principal, AgentScope.assets_update, "assets.create.batch"
         )
@@ -537,7 +534,6 @@ class CloudService:
         limit: int,
     ) -> SyncPullResponse:
         household_id = self._required_household(identity.uid)
-        self._require_pro_household(household_id)
         changes, next_cursor, has_more = self._storage.pull_changes(
             household_id,
             cursor,
@@ -556,7 +552,6 @@ class CloudService:
         limit: int,
     ) -> AuditListResponse:
         household_id = self._required_household(identity.uid)
-        self._require_pro_household(household_id)
         events, next_cursor, has_more = self._storage.list_audit_events(
             household_id,
             cursor,
@@ -570,7 +565,6 @@ class CloudService:
         request: MigrationUploadRequest,
     ) -> MigrationResponse:
         household_id = self._required_household(identity.uid)
-        self._require_pro_household(household_id)
         actor = Actor(type=ActorType.user, id=identity.uid)
         return self._storage.stage_migration(household_id, actor, request)
 
@@ -581,7 +575,6 @@ class CloudService:
         content_digest: str,
     ) -> MigrationResponse:
         household_id = self._required_household(identity.uid)
-        self._require_pro_household(household_id)
         actor = Actor(type=ActorType.user, id=identity.uid)
         return self._storage.activate_migration(
             household_id,
@@ -609,12 +602,15 @@ class CloudService:
             )
 
     def _require_active_household(self, household_id: str) -> None:
-        self._require_pro_household(household_id)
         household = self._storage.read_household_document(household_id, household_id)
         if household is None or household.get("status") != "active":
             raise WorkspaceNotActiveError(
                 "Agent Cloud workspace must complete migration activation before normal writes"
             )
+
+    def _require_active_pro_household(self, household_id: str) -> None:
+        self._require_pro_household(household_id)
+        self._require_active_household(household_id)
 
     def _require_pro_household(self, household_id: str) -> None:
         if self._entitlement_checker is not None and not self._entitlement_checker(household_id):
@@ -643,7 +639,7 @@ class CloudService:
         temporal_field: str | None = None,
         always_include_entity_types: set[str] | None = None,
     ) -> AgentEntityListResponse:
-        self._require_active_household(str(principal.household_id))
+        self._require_active_pro_household(str(principal.household_id))
         self._require_agent_scope(principal, required_scope, action)
         if start_date is not None and end_date is not None and start_date > end_date:
             raise ValueError("startDate must not be after endDate")
